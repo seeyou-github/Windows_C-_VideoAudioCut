@@ -1,0 +1,12 @@
+build/
+*.obj
+*.pdb
+*.ilk
+*.log
+*.tlog
+*.idb
+*.ipch
+*.sln.docstates
+*.tmp
+tmp_test.txt
+.vs/
