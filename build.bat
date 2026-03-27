@@ -22,6 +22,9 @@ if errorlevel 1 goto error
 %CXX% -c src\FFmpegRunner.cpp %CXXFLAGS% -o build\FFmpegRunner.o
 if errorlevel 1 goto error
 
+%CXX% -c src\ProcessUtils.cpp %CXXFLAGS% -o build\ProcessUtils.o
+if errorlevel 1 goto error
+
 %CXX% -c src\StringResources.cpp %CXXFLAGS% -o build\StringResources.o
 if errorlevel 1 goto error
 
@@ -29,7 +32,7 @@ if errorlevel 1 goto error
 if errorlevel 1 goto error
 
 echo Linking...
-%CXX% build\main.o build\MainWindow.o build\Config.o build\FFmpegRunner.o build\StringResources.o build\resource.o -o build\VideoAudioCut.exe %LDFLAGS%
+%CXX% build\main.o build\MainWindow.o build\Config.o build\FFmpegRunner.o build\ProcessUtils.o build\StringResources.o build\resource.o -o build\VideoAudioCut.exe %LDFLAGS%
 if errorlevel 1 goto error
 
 echo ===== Build succeeded =====

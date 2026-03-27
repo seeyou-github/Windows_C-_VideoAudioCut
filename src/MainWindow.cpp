@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "AppIds.h"
+#include "ProcessUtils.h"
 #include "ResourceIds.h"
 #include "StringResources.h"
 
@@ -37,6 +38,8 @@ struct RunLogBatchMessage {
 
 constexpr wchar_t kWindowClassName[] = L"VideoAudioCutMainWindow";
 constexpr wchar_t kRangeSliderClassName[] = L"VideoAudioCutRangeSlider";
+constexpr int kMaxLogChars = 64 * 1024;
+constexpr int kTrimLogChars = 16 * 1024;
 constexpr int kSidebarWidth = 228;
 constexpr int kMargin = 24;
 constexpr int kNavPadding = 14;
@@ -154,11 +157,17 @@ MainWindow::MainWindow()
       convertCanToMp4_(false),
       mediaProbeRequestId_(0),
       shuttingDown_(false),
-      backgroundThreads_() {
+      cancelBackgroundWork_(false),
+      backgroundThreads_(),
+      backgroundProcessMutex_(),
+      backgroundProcesses_() {
 }
 
 MainWindow::~MainWindow() {
     shuttingDown_.store(true);
+    cancelBackgroundWork_.store(true);
+    runner_.RequestStop();
+    RequestBackgroundStop();
     for (std::thread& worker : backgroundThreads_) {
         if (worker.joinable()) {
             worker.join();
@@ -485,7 +494,7 @@ void MainWindow::CreateControls() {
         WS_CHILD,
         0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
-    ::SendMessageW(controls_.logEdit, EM_SETLIMITTEXT, 0, 0);
+    ::SendMessageW(controls_.logEdit, EM_SETLIMITTEXT, kMaxLogChars * 2, 0);
     ::SendMessageW(controls_.fadeInTrack, TBM_SETRANGE, TRUE, MAKELPARAM(0, 30));
     ::SendMessageW(controls_.fadeInTrack, TBM_SETPAGESIZE, 0, 1);
     ::SendMessageW(controls_.fadeInTrack, TBM_SETTICFREQ, 1, 0);
@@ -987,18 +996,63 @@ void MainWindow::RefreshModule() {
 }
 
 void MainWindow::AppendLog(const std::wstring& line) {
-    int textLength = ::GetWindowTextLengthW(controls_.logEdit);
-    ::SendMessageW(controls_.logEdit, EM_SETSEL, textLength, textLength);
     std::wstring appended = line;
     if (!appended.empty() && appended.back() != L'\n') {
         appended += L"\r\n";
     }
-    ::SendMessageW(controls_.logEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(appended.c_str()));
-
     std::wstring lower = line;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
-    if (lower.find(L"error") != std::wstring::npos || lower.find(L"failed") != std::wstring::npos ||
-        lower.find(L"invalid") != std::wstring::npos) {
+    const bool expandForErrors =
+        lower.find(L"error") != std::wstring::npos ||
+        lower.find(L"failed") != std::wstring::npos ||
+        lower.find(L"invalid") != std::wstring::npos;
+    AppendLogText(appended, expandForErrors);
+}
+
+void MainWindow::AppendLogLines(const std::vector<std::wstring>& lines) {
+    if (lines.empty()) {
+        return;
+    }
+
+    std::wstring appended;
+    size_t totalLength = 0;
+    bool expandForErrors = false;
+    for (const auto& line : lines) {
+        totalLength += line.size() + 2;
+        std::wstring lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+        if (lower.find(L"error") != std::wstring::npos ||
+            lower.find(L"failed") != std::wstring::npos ||
+            lower.find(L"invalid") != std::wstring::npos) {
+            expandForErrors = true;
+        }
+    }
+    appended.reserve(totalLength);
+    for (const auto& line : lines) {
+        appended += line;
+        if (appended.empty() || appended.back() != L'\n') {
+            appended += L"\r\n";
+        }
+    }
+    AppendLogText(appended, expandForErrors);
+}
+
+void MainWindow::AppendLogText(const std::wstring& text, bool expandForErrors) {
+    if (controls_.logEdit == nullptr || text.empty()) {
+        return;
+    }
+
+    int textLength = ::GetWindowTextLengthW(controls_.logEdit);
+    if (textLength > kMaxLogChars) {
+        const int keepFrom = std::max(0, textLength - kTrimLogChars);
+        ::SendMessageW(controls_.logEdit, EM_SETSEL, 0, keepFrom);
+        ::SendMessageW(controls_.logEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
+        textLength = ::GetWindowTextLengthW(controls_.logEdit);
+    }
+
+    ::SendMessageW(controls_.logEdit, EM_SETSEL, textLength, textLength);
+    ::SendMessageW(controls_.logEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
+    if (expandForErrors) {
         SetLogExpanded(true);
     }
 }
@@ -1946,6 +2000,32 @@ void MainWindow::SpawnBackgroundTask(std::function<void()> task) {
     });
 }
 
+void MainWindow::RequestBackgroundStop() {
+    std::lock_guard<std::mutex> lock(backgroundProcessMutex_);
+    for (HANDLE processHandle : backgroundProcesses_) {
+        if (processHandle != nullptr) {
+            ::TerminateProcess(processHandle, 1);
+        }
+    }
+}
+
+void MainWindow::RegisterBackgroundProcess(HANDLE processHandle) const {
+    if (processHandle == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(backgroundProcessMutex_);
+    backgroundProcesses_.push_back(processHandle);
+}
+
+void MainWindow::UnregisterBackgroundProcess(HANDLE processHandle) const {
+    if (processHandle == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(backgroundProcessMutex_);
+    auto it = std::remove(backgroundProcesses_.begin(), backgroundProcesses_.end(), processHandle);
+    backgroundProcesses_.erase(it, backgroundProcesses_.end());
+}
+
 void MainWindow::UpdateLogPanelState() {
     if (hwnd_ != nullptr) {
         RECT rect{};
@@ -1983,6 +2063,7 @@ void MainWindow::RefreshConcatList() {
     } else if (selectedModule_ == 3) {
         items = &convertItems_;
     }
+    ::SendMessageW(controls_.concatList, WM_SETREDRAW, FALSE, 0);
     ::SendMessageW(controls_.concatList, LVM_DELETEALLITEMS, 0, 0);
     for (int index = 0; index < static_cast<int>(items->size()); ++index) {
         const ConcatListItem& item = (*items)[index];
@@ -2009,6 +2090,48 @@ void MainWindow::RefreshConcatList() {
             subItemData.pszText = const_cast<LPWSTR>(columns[subItem].c_str());
             ::SendMessageW(controls_.concatList, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&subItemData));
         }
+    }
+    ::SendMessageW(controls_.concatList, WM_SETREDRAW, TRUE, 0);
+    ::InvalidateRect(controls_.concatList, nullptr, TRUE);
+}
+
+void MainWindow::UpdateConcatListItem(int index) {
+    if (controls_.concatList == nullptr || index < 0) {
+        return;
+    }
+
+    const std::vector<ConcatListItem>* items = &concatItems_;
+    if (selectedModule_ == 2) {
+        items = &fadeItems_;
+    } else if (selectedModule_ == 3) {
+        items = &convertItems_;
+    }
+    if (index >= static_cast<int>(items->size())) {
+        return;
+    }
+
+    const ConcatListItem& item = (*items)[index];
+    LVITEMW listItem{};
+    listItem.mask = LVIF_TEXT;
+    listItem.iItem = index;
+    listItem.iSubItem = 0;
+    listItem.pszText = const_cast<LPWSTR>(item.fileName.c_str());
+    ::SendMessageW(controls_.concatList, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&listItem));
+
+    const std::vector<std::wstring> columns =
+        selectedModule_ == 2
+            ? std::vector<std::wstring>{item.durationText, item.audioCodec, item.audioBitrate, item.resultText}
+        : selectedModule_ == 3
+            ? std::vector<std::wstring>{item.durationText, item.videoCodec, item.audioCodec, item.resultText}
+            : std::vector<std::wstring>{item.durationText, item.resolutionText, item.videoCodec,
+                                        item.videoBitrate, item.audioCodec, item.audioBitrate};
+    for (int subItem = 0; subItem < static_cast<int>(columns.size()); ++subItem) {
+        LVITEMW subItemData{};
+        subItemData.iItem = index;
+        subItemData.iSubItem = subItem + 1;
+        subItemData.mask = LVIF_TEXT;
+        subItemData.pszText = const_cast<LPWSTR>(columns[subItem].c_str());
+        ::SendMessageW(controls_.concatList, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&subItemData));
     }
 }
 
@@ -2529,78 +2652,23 @@ bool MainWindow::TryProbeConcatItem(const std::wstring& inputPath, ConcatListIte
 int MainWindow::RunProcessCapture(const std::wstring& executablePath,
                                   const std::wstring& arguments,
                                   const std::function<void(const std::wstring&)>& logCallback) const {
-    SECURITY_ATTRIBUTES securityAttributes{};
-    securityAttributes.nLength = sizeof(securityAttributes);
-    securityAttributes.bInheritHandle = TRUE;
-
     HANDLE readPipe = nullptr;
-    HANDLE writePipe = nullptr;
-    if (!::CreatePipe(&readPipe, &writePipe, &securityAttributes, 0)) {
-        return -1;
-    }
-    ::SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW startupInfo{};
-    startupInfo.cb = sizeof(startupInfo);
-    startupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-    startupInfo.wShowWindow = SW_HIDE;
-    startupInfo.hStdOutput = writePipe;
-    startupInfo.hStdError = writePipe;
-
     PROCESS_INFORMATION processInfo{};
-    std::wstring commandLine = L"\"" + executablePath + L"\" " + arguments;
-    std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
-    mutableCommand.push_back(L'\0');
-
-    const BOOL created = ::CreateProcessW(
-        nullptr,
-        mutableCommand.data(),
-        nullptr,
-        nullptr,
-        TRUE,
-        CREATE_NO_WINDOW,
-        nullptr,
-        nullptr,
-        &startupInfo,
-        &processInfo);
-
-    ::CloseHandle(writePipe);
-    if (!created) {
-        ::CloseHandle(readPipe);
+    if (!ProcessUtils::CreateRedirectedProcess(executablePath, arguments, processInfo, readPipe)) {
         return -1;
     }
+    RegisterBackgroundProcess(processInfo.hProcess);
 
-    char buffer[512];
-    DWORD bytesRead = 0;
-    std::string textBuffer;
-    while (::ReadFile(readPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        textBuffer.append(buffer, bytesRead);
-
-        size_t newlinePos = 0;
-        while ((newlinePos = textBuffer.find('\n')) != std::string::npos) {
-            std::string line = textBuffer.substr(0, newlinePos + 1);
-            textBuffer.erase(0, newlinePos + 1);
-            const int utf8Length = ::MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
-            if (utf8Length > 0) {
-                std::wstring wideLine(utf8Length - 1, L'\0');
-                ::MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wideLine.data(), utf8Length);
-                logCallback(wideLine);
-            }
+    ProcessUtils::DrainProcessOutput(readPipe, [&](const std::wstring& line) {
+        if (!cancelBackgroundWork_.load()) {
+            logCallback(line);
         }
-    }
-    if (!textBuffer.empty()) {
-        const int utf8Length = ::MultiByteToWideChar(CP_UTF8, 0, textBuffer.c_str(), -1, nullptr, 0);
-        if (utf8Length > 0) {
-            std::wstring wideLine(utf8Length - 1, L'\0');
-            ::MultiByteToWideChar(CP_UTF8, 0, textBuffer.c_str(), -1, wideLine.data(), utf8Length);
-            logCallback(wideLine);
-        }
-    }
+    });
 
     ::WaitForSingleObject(processInfo.hProcess, INFINITE);
     DWORD exitCode = 1;
     ::GetExitCodeProcess(processInfo.hProcess, &exitCode);
+    UnregisterBackgroundProcess(processInfo.hProcess);
     ::CloseHandle(processInfo.hThread);
     ::CloseHandle(processInfo.hProcess);
     ::CloseHandle(readPipe);
@@ -2706,7 +2774,7 @@ void MainWindow::SetDarkTitleBar() const {
 }
 
 std::wstring MainWindow::EscapeArgument(const std::wstring& value) {
-    return L"\"" + value + L"\"";
+    return ProcessUtils::QuoteCommandLineArgument(value);
 }
 
 LRESULT CALLBACK MainWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -3238,9 +3306,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (runLogBatch == nullptr) {
             return 0;
         }
-        for (const auto& line : runLogBatch->lines) {
-            AppendLog(line);
-        }
+        AppendLogLines(runLogBatch->lines);
         return 0;
     }
     case WM_APP_FADE_ITEM_STATUS: {
@@ -3267,7 +3333,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 (*items)[status->index].hasError = true;
             }
             if ((selectedModule_ == 2 || selectedModule_ == 3)) {
-                RefreshConcatList();
+                UpdateConcatListItem(status->index);
             }
         }
         if (!status->success && !status->errorText.empty()) {
@@ -3299,7 +3365,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (items != nullptr && probe->index >= 0 && probe->index < static_cast<int>(items->size())) {
             (*items)[probe->index] = std::move(probe->item);
             if ((probe->module == 1 && selectedModule_ == 1) || (probe->module == 2 && selectedModule_ == 2)) {
-                RefreshConcatList();
+                UpdateConcatListItem(probe->index);
             }
         }
         return 0;
@@ -3363,6 +3429,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
     case WM_DESTROY:
         shuttingDown_.store(true);
+        cancelBackgroundWork_.store(true);
+        runner_.RequestStop();
+        RequestBackgroundStop();
         SaveWindowPlacement();
         ::PostQuitMessage(0);
         return 0;

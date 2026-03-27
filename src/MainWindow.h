@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -128,6 +129,8 @@ private:
     void RefreshText();
     void RefreshModule();
     void AppendLog(const std::wstring& line);
+    void AppendLogLines(const std::vector<std::wstring>& lines);
+    void AppendLogText(const std::wstring& text, bool expandForErrors);
     void ClearLog();
     void OpenInputFileDialog();
     void OpenConcatFilesDialog();
@@ -155,9 +158,13 @@ private:
     void ConfigureMediaListColumns();
     void InitializeConcatList();
     void RefreshConcatList();
+    void UpdateConcatListItem(int index);
     void RefreshConvertInfo();
     void SetLogExpanded(bool expanded);
     void SpawnBackgroundTask(std::function<void()> task);
+    void RequestBackgroundStop();
+    void RegisterBackgroundProcess(HANDLE processHandle) const;
+    void UnregisterBackgroundProcess(HANDLE processHandle) const;
     std::wstring FormatMilliseconds(int totalMilliseconds) const;
     std::wstring FormatClockTextNoMilliseconds(int totalMilliseconds) const;
     std::wstring FormatBitrateText(long long bitrate) const;
@@ -242,5 +249,8 @@ private:
     bool convertCanToMp4_;
     int mediaProbeRequestId_;
     std::atomic<bool> shuttingDown_;
+    std::atomic<bool> cancelBackgroundWork_;
     std::vector<std::thread> backgroundThreads_;
+    mutable std::mutex backgroundProcessMutex_;
+    mutable std::vector<HANDLE> backgroundProcesses_;
 };

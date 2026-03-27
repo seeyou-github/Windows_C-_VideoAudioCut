@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+
 #include <functional>
 #include <atomic>
 #include <string>
@@ -14,6 +16,7 @@ public:
     ~FFmpegRunner();
 
     bool IsRunning() const;
+    void RequestStop();
     bool Start(const std::wstring& ffmpegPath,
                const std::wstring& arguments,
                LogCallback logCallback,
@@ -27,4 +30,5 @@ private:
 
     std::thread worker_;
     std::atomic<bool> running_;
+    std::atomic<HANDLE> processHandle_;
 };
