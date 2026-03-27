@@ -56,8 +56,9 @@ constexpr int kLogExpandedHeight = 110;
 
 std::wstring GetWindowTextString(HWND hwnd) {
     const int length = ::GetWindowTextLengthW(hwnd);
-    std::wstring value(length, L'\0');
-    ::GetWindowTextW(hwnd, value.data(), length + 1);
+    std::wstring value(length + 1, L'\0');
+    const int copied = ::GetWindowTextW(hwnd, value.data(), length + 1);
+    value.resize(std::max(0, copied));
     return value;
 }
 
