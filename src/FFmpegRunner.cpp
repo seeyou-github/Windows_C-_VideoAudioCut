@@ -22,14 +22,14 @@ FFmpegRunner::~FFmpegRunner() {
 }
 
 bool FFmpegRunner::IsRunning() const {
-    return running_;
+    return running_.load();
 }
 
 bool FFmpegRunner::Start(const std::wstring& ffmpegPath,
                          const std::wstring& arguments,
                          LogCallback logCallback,
                          FinishCallback finishCallback) {
-    if (running_) {
+    if (running_.load()) {
         return false;
     }
 
@@ -37,7 +37,7 @@ bool FFmpegRunner::Start(const std::wstring& ffmpegPath,
         worker_.join();
     }
 
-    running_ = true;
+    running_.store(true);
     worker_ = std::thread(&FFmpegRunner::RunProcess, this, ffmpegPath, arguments, logCallback, finishCallback);
     return true;
 }
@@ -54,7 +54,7 @@ void FFmpegRunner::RunProcess(std::wstring ffmpegPath,
     HANDLE writePipe = nullptr;
 
     if (!::CreatePipe(&readPipe, &writePipe, &securityAttributes, 0)) {
-        running_ = false;
+        running_.store(false);
         finishCallback(-1);
         return;
     }
@@ -89,7 +89,7 @@ void FFmpegRunner::RunProcess(std::wstring ffmpegPath,
 
     if (!created) {
         ::CloseHandle(readPipe);
-        running_ = false;
+        running_.store(false);
         finishCallback(-1);
         return;
     }
@@ -139,6 +139,6 @@ void FFmpegRunner::RunProcess(std::wstring ffmpegPath,
     ::CloseHandle(processInfo.hProcess);
     ::CloseHandle(readPipe);
 
-    running_ = false;
+    running_.store(false);
     finishCallback(static_cast<int>(exitCode));
 }

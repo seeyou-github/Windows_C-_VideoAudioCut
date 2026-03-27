@@ -86,6 +86,11 @@ private:
     struct FadeItemStatusMessage {
         int index = -1;
         bool success = false;
+        bool applyLastOutputPath = false;
+        std::wstring outputPath;
+        bool applyConvertItemResult = false;
+        std::wstring convertResultText;
+        bool convertHasError = false;
         std::wstring errorText;
     };
 

@@ -1454,7 +1454,6 @@ void MainWindow::StartFadeTask() {
             const int localFadeOut = std::max(0, std::min(fadeOutMilliseconds, durationMilliseconds > 0 ? durationMilliseconds : fadeOutMilliseconds));
             const int fadeOutStart = std::max(0, durationMilliseconds - localFadeOut);
             const std::wstring outputPath = BuildFadeOutputPath(inputPath);
-            lastOutputPath_ = outputPath;
 
             std::wstringstream filter;
             filter << L"afade=t=in:st=0:d=" << (localFadeIn / 1000.0)
@@ -1500,16 +1499,19 @@ void MainWindow::StartFadeTask() {
                 });
             if (exitCode != 0) {
                 finalExitCode = exitCode;
-                auto* status = new FadeItemStatusMessage{
-                    index,
-                    false,
-                    L"文件处理失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)
-                };
+                auto* status = new FadeItemStatusMessage{};
+                status->index = index;
+                status->success = false;
+                status->errorText = L"文件处理失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine);
                 PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::unique_ptr<FadeItemStatusMessage>(status));
                 break;
             }
-            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0,
-                             std::make_unique<FadeItemStatusMessage>(FadeItemStatusMessage{index, true, L""}));
+            auto statusOk = std::make_unique<FadeItemStatusMessage>();
+            statusOk->index = index;
+            statusOk->success = true;
+            statusOk->applyLastOutputPath = true;
+            statusOk->outputPath = outputPath;
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(statusOk));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(finalExitCode), 0);
     });
@@ -1553,8 +1555,11 @@ void MainWindow::StartConvertTask() {
             if (convertMode_ == 1) {
                 if (extension != L".m4a") {
                     finalExitCode = 1;
-                    PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
-                        FadeItemStatusMessage{index, false, L"文件不是 m4a，无法执行 M4A 转 MP3：\n" + inputPath}));
+                    auto status = std::make_unique<FadeItemStatusMessage>();
+                    status->index = index;
+                    status->success = false;
+                    status->errorText = L"文件不是 m4a，无法执行 M4A 转 MP3：\n" + inputPath;
+                    PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(status));
                     break;
                 }
                 ConcatListItem info{};
@@ -1605,15 +1610,20 @@ void MainWindow::StartConvertTask() {
 
             if (exitCode != 0) {
                 finalExitCode = exitCode;
-                PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
-                    FadeItemStatusMessage{index, false,
-                                          L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+                auto status = std::make_unique<FadeItemStatusMessage>();
+                status->index = index;
+                status->success = false;
+                status->errorText = L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine);
+                PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(status));
                 break;
             }
 
-            lastOutputPath_ = outputPath;
-            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0,
-                             std::make_unique<FadeItemStatusMessage>(FadeItemStatusMessage{index, true, L""}));
+            auto statusOk = std::make_unique<FadeItemStatusMessage>();
+            statusOk->index = index;
+            statusOk->success = true;
+            statusOk->applyLastOutputPath = true;
+            statusOk->outputPath = outputPath;
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(statusOk));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(finalExitCode), 0);
     });
@@ -1662,7 +1672,6 @@ void MainWindow::StartConvertToMp3Task() {
     ::EnableWindow(controls_.convertToMp4Button, FALSE);
     taskRunning_ = true;
     activeTaskModule_ = 3;
-    lastOutputPath_ = outputPath;
 
     const HWND target = hwnd_;
     SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
@@ -1680,14 +1689,18 @@ void MainWindow::StartConvertToMp3Task() {
                 }
                 PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
-        if (exitCode == 0) {
-            convertItem_.resultText = L"成功";
-        } else {
-            convertItem_.resultText = L"失败";
-            convertItem_.hasError = true;
-            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
-                FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+        auto status = std::make_unique<FadeItemStatusMessage>();
+        status->index = 0;
+        status->success = exitCode == 0;
+        status->applyLastOutputPath = exitCode == 0;
+        status->outputPath = outputPath;
+        status->applyConvertItemResult = true;
+        status->convertResultText = exitCode == 0 ? L"成功" : L"失败";
+        status->convertHasError = exitCode != 0;
+        if (exitCode != 0) {
+            status->errorText = L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine);
         }
+        PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(status));
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
     });
 }
@@ -1725,10 +1738,9 @@ void MainWindow::StartConvertToMp4Task() {
     ::EnableWindow(controls_.convertToMp4Button, FALSE);
     taskRunning_ = true;
     activeTaskModule_ = 3;
-    lastOutputPath_ = outputPath;
 
     const HWND target = hwnd_;
-    SpawnBackgroundTask([this, target, inputPath, args = args.str()]() {
+    SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
@@ -1743,14 +1755,18 @@ void MainWindow::StartConvertToMp4Task() {
                 }
                 PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
-        if (exitCode == 0) {
-            convertItem_.resultText = L"成功";
-        } else {
-            convertItem_.resultText = L"失败";
-            convertItem_.hasError = true;
-            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
-                FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+        auto status = std::make_unique<FadeItemStatusMessage>();
+        status->index = 0;
+        status->success = exitCode == 0;
+        status->applyLastOutputPath = exitCode == 0;
+        status->outputPath = outputPath;
+        status->applyConvertItemResult = true;
+        status->convertResultText = exitCode == 0 ? L"成功" : L"失败";
+        status->convertHasError = exitCode != 0;
+        if (exitCode != 0) {
+            status->errorText = L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine);
         }
+        PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::move(status));
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
     });
 }
@@ -3122,6 +3138,13 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         std::unique_ptr<FadeItemStatusMessage> status(reinterpret_cast<FadeItemStatusMessage*>(lParam));
         if (status == nullptr) {
             return 0;
+        }
+        if (status->applyLastOutputPath) {
+            lastOutputPath_ = status->outputPath;
+        }
+        if (status->applyConvertItemResult) {
+            convertItem_.resultText = status->convertResultText;
+            convertItem_.hasError = status->convertHasError;
         }
         std::vector<ConcatListItem>* items = nullptr;
         if (activeTaskModule_ == 2) {

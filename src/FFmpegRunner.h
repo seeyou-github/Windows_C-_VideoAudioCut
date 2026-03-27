@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <atomic>
 #include <string>
 #include <thread>
 
@@ -25,5 +26,5 @@ private:
                     FinishCallback finishCallback);
 
     std::thread worker_;
-    bool running_;
+    std::atomic<bool> running_;
 };
