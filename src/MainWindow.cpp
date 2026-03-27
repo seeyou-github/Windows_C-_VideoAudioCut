@@ -226,6 +226,15 @@ bool MainWindow::Create(HINSTANCE instance, int showCommand) {
         return false;
     }
 
+    if (HICON largeIcon = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(ID_APP_ICON), IMAGE_ICON,
+                                                          ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON), LR_SHARED))) {
+        ::SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(largeIcon));
+    }
+    if (HICON smallIcon = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(ID_APP_ICON), IMAGE_ICON,
+                                                          ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), LR_SHARED))) {
+        ::SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
+    }
+
     CenterWindowToScreen(hwnd_, config_.windowWidth, config_.windowHeight);
     SetDarkTitleBar();
     ::ShowWindow(hwnd_, showCommand);
@@ -245,8 +254,10 @@ bool MainWindow::RegisterWindowClass(HINSTANCE instance) {
     wc.lpszClassName = kWindowClassName;
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = backgroundBrush_;
-    wc.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
+    wc.hIcon = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(ID_APP_ICON), IMAGE_ICON,
+                                               ::GetSystemMetrics(SM_CXICON), ::GetSystemMetrics(SM_CYICON), LR_SHARED));
+    wc.hIconSm = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(ID_APP_ICON), IMAGE_ICON,
+                                                 ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     return ::RegisterClassExW(&wc) != 0;
 }
 
@@ -1615,7 +1626,7 @@ void MainWindow::StartFadeTask() {
             const int exitCode = RunProcessCapture(
                 ffmpegPath,
                 args.str(),
-                [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
+                [target, &lastErrorLine](const std::wstring& line) {
                     std::wstring trimmed = line;
                     while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                         trimmed.pop_back();
@@ -1623,9 +1634,8 @@ void MainWindow::StartFadeTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    QueueLogLine(target, pendingLines, line);
+                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
                 });
-            FlushPendingLogLines(target, pendingLines);
             if (exitCode != 0) {
                 finalExitCode = exitCode;
                 auto* status = new FadeItemStatusMessage{};
@@ -1672,8 +1682,6 @@ void MainWindow::StartConvertTask() {
     const std::vector<std::wstring> inputPaths = convertInputPaths_;
     SpawnBackgroundTask([this, target, ffmpegPath, inputPaths]() {
         int finalExitCode = 0;
-        std::vector<std::wstring> pendingLines;
-        pendingLines.reserve(kLogBatchSize);
         for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
             const std::wstring& inputPath = inputPaths[index];
             const std::filesystem::path inputFile(inputPath);
@@ -1719,17 +1727,17 @@ void MainWindow::StartConvertTask() {
             }
 
             const std::wstring fullCommand = L"\"" + ffmpegPath + L"\" " + args.str();
-            QueueLogLine(target, pendingLines, L"输入文件：" + inputPath);
-            QueueLogLine(target, pendingLines, L"输出文件：" + outputPath);
-            QueueLogLine(target, pendingLines, L"FFmpeg 命令：");
-            QueueLogLine(target, pendingLines, fullCommand);
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"\x8F93\x5165\x6587\x4EF6\xFF1A" + inputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"\x8F93\x51FA\x6587\x4EF6\xFF1A" + outputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"FFmpeg \x547D\x4EE4\xFF1A"}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{fullCommand}));
 
 
             std::wstring lastErrorLine;
             const int exitCode = RunProcessCapture(
                 ffmpegPath,
                 args.str(),
-                [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
+                [target, &lastErrorLine](const std::wstring& line) {
                     std::wstring trimmed = line;
                     while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                         trimmed.pop_back();
@@ -1737,9 +1745,8 @@ void MainWindow::StartConvertTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    QueueLogLine(target, pendingLines, line);
+                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
                 });
-            FlushPendingLogLines(target, pendingLines);
 
             if (exitCode != 0) {
                 finalExitCode = exitCode;
@@ -1803,18 +1810,18 @@ void MainWindow::StartConvertToMp3Task() {
     AppendLog(fullCommand);
     ::EnableWindow(controls_.convertToMp3Button, FALSE);
     ::EnableWindow(controls_.convertToMp4Button, FALSE);
+    ::SetWindowTextW(controls_.convertToMp3Button, L"\x8F6C\x6362\x4E2D...");
+    ::SetWindowTextW(controls_.convertToMp4Button, L"\x8F6C\x6362\x4E2D...");
     taskRunning_ = true;
     activeTaskModule_ = 3;
 
     const HWND target = hwnd_;
     SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
-        std::vector<std::wstring> pendingLines;
-        pendingLines.reserve(kLogBatchSize);
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
             args,
-            [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
+            [target, &lastErrorLine](const std::wstring& line) {
                 std::wstring trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                     trimmed.pop_back();
@@ -1822,9 +1829,8 @@ void MainWindow::StartConvertToMp3Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                QueueLogLine(target, pendingLines, line);
+                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
-        FlushPendingLogLines(target, pendingLines);
         auto status = std::make_unique<FadeItemStatusMessage>();
         status->index = 0;
         status->success = exitCode == 0;
@@ -1872,18 +1878,18 @@ void MainWindow::StartConvertToMp4Task() {
     AppendLog(fullCommand);
     ::EnableWindow(controls_.convertToMp3Button, FALSE);
     ::EnableWindow(controls_.convertToMp4Button, FALSE);
+    ::SetWindowTextW(controls_.convertToMp3Button, L"\x8F6C\x6362\x4E2D...");
+    ::SetWindowTextW(controls_.convertToMp4Button, L"\x8F6C\x6362\x4E2D...");
     taskRunning_ = true;
     activeTaskModule_ = 3;
 
     const HWND target = hwnd_;
     SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
-        std::vector<std::wstring> pendingLines;
-        pendingLines.reserve(kLogBatchSize);
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
             args,
-            [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
+            [target, &lastErrorLine](const std::wstring& line) {
                 std::wstring trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                     trimmed.pop_back();
@@ -1891,9 +1897,8 @@ void MainWindow::StartConvertToMp4Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                QueueLogLine(target, pendingLines, line);
+                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
-        FlushPendingLogLines(target, pendingLines);
         auto status = std::make_unique<FadeItemStatusMessage>();
         status->index = 0;
         status->success = exitCode == 0;
@@ -2138,6 +2143,10 @@ void MainWindow::UpdateConcatListItem(int index) {
 void MainWindow::RefreshConvertInfo() {
     const bool hasFile = !convertInputPaths_.empty();
     const ConcatListItem& item = convertItem_;
+    ::SetWindowTextW(controls_.convertToMp3Button,
+                     taskRunning_ && activeTaskModule_ == 3 ? L"\x8F6C\x6362\x4E2D..." : L"\x8F6C\x4E3A MP3");
+    ::SetWindowTextW(controls_.convertToMp4Button,
+                     taskRunning_ && activeTaskModule_ == 3 ? L"\x8F6C\x6362\x4E2D..." : L"\x8F6C\x4E3A MP4");
     ::SetWindowTextW(controls_.convertInfoValueFile, hasFile ? item.fileName.c_str() : L"-");
     if (hasFile) {
         const std::wstring extension = std::filesystem::path(convertInputPaths_.front()).extension().wstring();
@@ -3422,6 +3431,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             cutSucceeded_ = true;
             ::SetWindowTextW(controls_.runButton, LoadStringResource(IDS_BUTTON_SUCCESS).c_str());
             ::InvalidateRect(controls_.runButton, nullptr, TRUE);
+        }
+        if (selectedModule_ == 3) {
+            ::SetWindowTextW(controls_.convertToMp3Button, L"转为 MP3");
+            ::SetWindowTextW(controls_.convertToMp4Button, L"转为 MP4");
+            ::InvalidateRect(controls_.convertToMp3Button, nullptr, TRUE);
+            ::InvalidateRect(controls_.convertToMp4Button, nullptr, TRUE);
         }
         activeTaskModule_ = -1;
         UpdatePrimaryActionState();

@@ -1,5 +1,7 @@
 #include "resource.h"
 
+ID_APP_ICON ICON "icon.ico"
+
 STRINGTABLE
 BEGIN
     2001 L"\x89C6\x9891\x97F3\x9891\x526A\x5207\x5DE5\x5177"

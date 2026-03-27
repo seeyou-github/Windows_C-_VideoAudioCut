@@ -120,10 +120,15 @@ void DrainProcessOutput(HANDLE readPipe, const std::function<void(const std::wst
         buffer[bytesRead] = '\0';
         textBuffer.append(buffer, bytesRead);
 
-        size_t newlinePos = 0;
-        while ((newlinePos = textBuffer.find('\n')) != std::string::npos) {
-            std::string line = textBuffer.substr(0, newlinePos + 1);
-            textBuffer.erase(0, newlinePos + 1);
+        size_t breakPos = 0;
+        while ((breakPos = textBuffer.find_first_of("\r\n")) != std::string::npos) {
+            size_t consumeLength = 1;
+            if (textBuffer[breakPos] == '\r' && breakPos + 1 < textBuffer.size() && textBuffer[breakPos + 1] == '\n') {
+                consumeLength = 2;
+            }
+
+            std::string line = textBuffer.substr(0, breakPos + consumeLength);
+            textBuffer.erase(0, breakPos + consumeLength);
 
             std::wstring wideLine = DecodeProcessText(line);
             if (!wideLine.empty()) {
