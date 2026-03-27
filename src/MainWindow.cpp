@@ -62,6 +62,19 @@ std::wstring GetWindowTextString(HWND hwnd) {
     return value;
 }
 
+template <typename MessageType>
+bool PostOwnedMessage(HWND hwnd, UINT message, WPARAM wParam, std::unique_ptr<MessageType> payload) {
+    if (hwnd == nullptr || payload == nullptr || !::IsWindow(hwnd)) {
+        return false;
+    }
+    MessageType* raw = payload.release();
+    if (!::PostMessageW(hwnd, message, wParam, reinterpret_cast<LPARAM>(raw))) {
+        delete raw;
+        return false;
+    }
+    return true;
+}
+
 bool FileExists(const std::wstring& path) {
     const DWORD attributes = ::GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
@@ -116,10 +129,18 @@ MainWindow::MainWindow()
       fadeOutMilliseconds_(6000),
       taskRunning_(false),
       convertCanToMp3_(false),
-      convertCanToMp4_(false) {
+      convertCanToMp4_(false),
+      shuttingDown_(false),
+      backgroundThreads_() {
 }
 
 MainWindow::~MainWindow() {
+    shuttingDown_.store(true);
+    for (std::thread& worker : backgroundThreads_) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
     if (uiFont_ != nullptr && uiFont_ != ::GetStockObject(DEFAULT_GUI_FONT)) {
         ::DeleteObject(uiFont_);
     }
@@ -1311,8 +1332,7 @@ void MainWindow::StartCutTask() {
         config_.ffmpegPath,
         args.str(),
         [target = hwnd_](const std::wstring& line) {
-            auto* message = new RunLogMessage{line};
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(message));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
         },
         [target = hwnd_](int exitCode) {
             ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
@@ -1379,8 +1399,7 @@ void MainWindow::StartConcatTask() {
         config_.ffmpegPath,
         args.str(),
         [target = hwnd_](const std::wstring& line) {
-            auto* message = new RunLogMessage{line};
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(message));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
         },
         [target = hwnd_, listFilePath](int exitCode) {
             if (!listFilePath.empty()) {
@@ -1422,7 +1441,7 @@ void MainWindow::StartFadeTask() {
     const std::vector<std::wstring> inputPaths = fadeInputPaths_;
     const int fadeInMilliseconds = fadeInMilliseconds_;
     const int fadeOutMilliseconds = fadeOutMilliseconds_;
-    std::thread([this, target, ffmpegPath, inputPaths, fadeInMilliseconds, fadeOutMilliseconds]() {
+    SpawnBackgroundTask([this, target, ffmpegPath, inputPaths, fadeInMilliseconds, fadeOutMilliseconds]() {
         int finalExitCode = 0;
         for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
             const auto& inputPath = inputPaths[index];
@@ -1461,10 +1480,10 @@ void MainWindow::StartFadeTask() {
             args << L" " << EscapeArgument(outputPath);
 
             const std::wstring fullCommand = L"\"" + ffmpegPath + L"\" " + args.str();
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"输入文件：" + inputPath}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"输出文件：" + outputPath}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"FFmpeg 命令："}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{fullCommand}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输入文件：" + inputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输出文件：" + outputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"FFmpeg 命令："}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{fullCommand}));
             std::wstring lastErrorLine;
             const int exitCode = RunProcessCapture(
                 ffmpegPath,
@@ -1477,7 +1496,7 @@ void MainWindow::StartFadeTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{line}));
+                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
                 });
             if (exitCode != 0) {
                 finalExitCode = exitCode;
@@ -1486,14 +1505,14 @@ void MainWindow::StartFadeTask() {
                     false,
                     L"文件处理失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)
                 };
-                ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0, reinterpret_cast<LPARAM>(status));
+                PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::unique_ptr<FadeItemStatusMessage>(status));
                 break;
             }
-            ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0,
-                           reinterpret_cast<LPARAM>(new FadeItemStatusMessage{index, true, L""}));
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0,
+                             std::make_unique<FadeItemStatusMessage>(FadeItemStatusMessage{index, true, L""}));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(finalExitCode), 0);
-    }).detach();
+    });
 }
 
 void MainWindow::StartConvertTask() {
@@ -1520,7 +1539,7 @@ void MainWindow::StartConvertTask() {
     const HWND target = hwnd_;
     const std::wstring ffmpegPath = config_.ffmpegPath;
     const std::vector<std::wstring> inputPaths = convertInputPaths_;
-    std::thread([this, target, ffmpegPath, inputPaths]() {
+    SpawnBackgroundTask([this, target, ffmpegPath, inputPaths]() {
         int finalExitCode = 0;
         for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
             const std::wstring& inputPath = inputPaths[index];
@@ -1534,8 +1553,8 @@ void MainWindow::StartConvertTask() {
             if (convertMode_ == 1) {
                 if (extension != L".m4a") {
                     finalExitCode = 1;
-                    ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0, reinterpret_cast<LPARAM>(
-                        new FadeItemStatusMessage{index, false, L"文件不是 m4a，无法执行 M4A 转 MP3：\n" + inputPath}));
+                    PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
+                        FadeItemStatusMessage{index, false, L"文件不是 m4a，无法执行 M4A 转 MP3：\n" + inputPath}));
                     break;
                 }
                 ConcatListItem info{};
@@ -1564,10 +1583,10 @@ void MainWindow::StartConvertTask() {
             }
 
             const std::wstring fullCommand = L"\"" + ffmpegPath + L"\" " + args.str();
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"输入文件：" + inputPath}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"输出文件：" + outputPath}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{L"FFmpeg 命令："}));
-            ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{fullCommand}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输入文件：" + inputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输出文件：" + outputPath}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"FFmpeg 命令："}));
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{fullCommand}));
 
             std::wstring lastErrorLine;
             const int exitCode = RunProcessCapture(
@@ -1581,23 +1600,23 @@ void MainWindow::StartConvertTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{line}));
+                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
                 });
 
             if (exitCode != 0) {
                 finalExitCode = exitCode;
-                ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0, reinterpret_cast<LPARAM>(
-                    new FadeItemStatusMessage{index, false,
-                                              L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+                PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
+                    FadeItemStatusMessage{index, false,
+                                          L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
                 break;
             }
 
             lastOutputPath_ = outputPath;
-            ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0,
-                           reinterpret_cast<LPARAM>(new FadeItemStatusMessage{index, true, L""}));
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0,
+                             std::make_unique<FadeItemStatusMessage>(FadeItemStatusMessage{index, true, L""}));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(finalExitCode), 0);
-    }).detach();
+    });
 }
 
 void MainWindow::StartConvertToMp3Task() {
@@ -1646,7 +1665,7 @@ void MainWindow::StartConvertToMp3Task() {
     lastOutputPath_ = outputPath;
 
     const HWND target = hwnd_;
-    std::thread([this, target, inputPath, outputPath, args = args.str()]() {
+    SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
@@ -1659,18 +1678,18 @@ void MainWindow::StartConvertToMp3Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{line}));
+                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
         if (exitCode == 0) {
             convertItem_.resultText = L"成功";
         } else {
             convertItem_.resultText = L"失败";
             convertItem_.hasError = true;
-            ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0, reinterpret_cast<LPARAM>(
-                new FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
+                FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
-    }).detach();
+    });
 }
 
 void MainWindow::StartConvertToMp4Task() {
@@ -1709,7 +1728,7 @@ void MainWindow::StartConvertToMp4Task() {
     lastOutputPath_ = outputPath;
 
     const HWND target = hwnd_;
-    std::thread([this, target, inputPath, args = args.str()]() {
+    SpawnBackgroundTask([this, target, inputPath, args = args.str()]() {
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
@@ -1722,18 +1741,18 @@ void MainWindow::StartConvertToMp4Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                ::PostMessageW(target, WM_APP_RUN_LOG, 0, reinterpret_cast<LPARAM>(new RunLogMessage{line}));
+                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
             });
         if (exitCode == 0) {
             convertItem_.resultText = L"成功";
         } else {
             convertItem_.resultText = L"失败";
             convertItem_.hasError = true;
-            ::PostMessageW(target, WM_APP_FADE_ITEM_STATUS, 0, reinterpret_cast<LPARAM>(
-                new FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
+            PostOwnedMessage(target, WM_APP_FADE_ITEM_STATUS, 0, std::make_unique<FadeItemStatusMessage>(
+                FadeItemStatusMessage{0, false, L"文件转换失败：\n" + inputPath + (lastErrorLine.empty() ? L"" : L"\n\n" + lastErrorLine)}));
         }
         ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
-    }).detach();
+    });
 }
 
 void MainWindow::AutoDetectInputDuration() {
@@ -1750,12 +1769,12 @@ void MainWindow::AutoDetectInputDuration() {
     }
 
     const HWND target = hwnd_;
-    std::thread([this, target, inputPath, requestId]() {
+    SpawnBackgroundTask([this, target, inputPath, requestId]() {
         int durationMilliseconds = 0;
         const bool success = TryProbeDurationMilliseconds(inputPath, durationMilliseconds);
-        auto* result = new DurationProbeResult{requestId, success, durationMilliseconds};
-        ::PostMessageW(target, WM_APP_DURATION_PROBED, 0, reinterpret_cast<LPARAM>(result));
-    }).detach();
+        PostOwnedMessage(target, WM_APP_DURATION_PROBED, 0,
+                         std::make_unique<DurationProbeResult>(DurationProbeResult{requestId, success, durationMilliseconds}));
+    });
 }
 
 void MainWindow::ResetDurationState() {
@@ -1818,6 +1837,12 @@ void MainWindow::UpdateTimeDisplays() {
 void MainWindow::SetLogExpanded(bool) {
     logExpanded_ = true;
     UpdateLogPanelState();
+}
+
+void MainWindow::SpawnBackgroundTask(std::function<void()> task) {
+    backgroundThreads_.emplace_back([task = std::move(task)]() mutable {
+        task();
+    });
 }
 
 void MainWindow::UpdateLogPanelState() {
@@ -3165,6 +3190,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_DESTROY:
+        shuttingDown_.store(true);
         SaveWindowPlacement();
         ::PostQuitMessage(0);
         return 0;

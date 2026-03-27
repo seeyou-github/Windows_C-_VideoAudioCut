@@ -5,8 +5,10 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 class MainWindow {
@@ -136,6 +138,7 @@ private:
     void RefreshConcatList();
     void RefreshConvertInfo();
     void SetLogExpanded(bool expanded);
+    void SpawnBackgroundTask(std::function<void()> task);
     std::wstring FormatMilliseconds(int totalMilliseconds) const;
     std::wstring FormatClockTextNoMilliseconds(int totalMilliseconds) const;
     std::wstring FormatBitrateText(long long bitrate) const;
@@ -218,4 +221,6 @@ private:
     bool taskRunning_;
     bool convertCanToMp3_;
     bool convertCanToMp4_;
+    std::atomic<bool> shuttingDown_;
+    std::vector<std::thread> backgroundThreads_;
 };
