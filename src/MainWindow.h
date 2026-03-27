@@ -27,6 +27,7 @@ private:
         HWND navConcatButton = nullptr;
         HWND navFadeButton = nullptr;
         HWND navConvertButton = nullptr;
+        HWND navMergeButton = nullptr;
         HWND settingsButton = nullptr;
         HWND contentTitle = nullptr;
         HWND cutGroup = nullptr;
@@ -56,6 +57,10 @@ private:
         HWND convertInfoValueFile = nullptr;
         HWND convertInfoLabelFormat = nullptr;
         HWND convertInfoValueFormat = nullptr;
+        HWND convertInfoLabelDuration = nullptr;
+        HWND convertInfoValueDuration = nullptr;
+        HWND convertInfoLabelSize = nullptr;
+        HWND convertInfoValueSize = nullptr;
         HWND convertInfoLabelVideoCodec = nullptr;
         HWND convertInfoValueVideoCodec = nullptr;
         HWND convertInfoLabelVideoBitrate = nullptr;
@@ -99,6 +104,7 @@ private:
         std::wstring filePath;
         std::wstring fileName;
         std::wstring durationText;
+        std::wstring sizeText;
         std::wstring resolutionText;
         std::wstring videoCodec;
         std::wstring videoBitrate;
@@ -136,6 +142,8 @@ private:
     void OpenConcatFilesDialog();
     void OpenFadeFilesDialog();
     void OpenConvertFilesDialog();
+    void OpenMergeVideoDialog();
+    void OpenMergeAudioDialog();
     void StartMediaProbe(int module, const std::vector<std::wstring>& inputPaths, bool singleItem);
     bool PromptOutputFolder(std::wstring& folderPath);
     void OpenOutputFolder();
@@ -146,6 +154,7 @@ private:
     void StartConvertTask();
     void StartConvertToMp3Task();
     void StartConvertToMp4Task();
+    void StartMergeTask();
     void AutoDetectInputDuration();
     void ResetDurationState();
     void UpdateFileDurationDisplay();
@@ -168,10 +177,12 @@ private:
     std::wstring FormatMilliseconds(int totalMilliseconds) const;
     std::wstring FormatClockTextNoMilliseconds(int totalMilliseconds) const;
     std::wstring FormatBitrateText(long long bitrate) const;
+    std::wstring FormatFileSizeText(unsigned long long sizeBytes) const;
     std::wstring BuildFadeOutputPath(const std::wstring& inputPath) const;
     std::wstring BuildConvertOutputPath(const std::wstring& inputPath) const;
     std::wstring BuildConvertMp3OutputPath(const std::wstring& inputPath) const;
     std::wstring BuildConvertMp4OutputPath(const std::wstring& inputPath) const;
+    std::wstring BuildMergeOutputPath(const std::wstring& videoPath) const;
     void SaveWindowPlacement();
     std::wstring BuildDefaultOutputPath(const std::wstring& inputPath) const;
     std::wstring BuildOutputPathInFolder(const std::wstring& inputPath, const std::wstring& folderPath) const;
@@ -238,6 +249,10 @@ private:
     std::vector<std::wstring> convertInputPaths_;
     std::vector<ConcatListItem> convertItems_;
     ConcatListItem convertItem_;
+    ConcatListItem mergeVideoItem_;
+    ConcatListItem mergeAudioItem_;
+    std::wstring mergeVideoPath_;
+    std::wstring mergeAudioPath_;
     std::wstring concatListFilePath_;
     std::wstring lastOutputPath_;
     int activeTaskModule_;

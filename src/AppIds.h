@@ -10,6 +10,7 @@ constexpr int IDC_NAV_CUT = 1004;
 constexpr int IDC_NAV_CONCAT = 1005;
 constexpr int IDC_NAV_FADE = 1006;
 constexpr int IDC_NAV_CONVERT = 1007;
+constexpr int IDC_NAV_MERGE = 1008;
 
 constexpr int IDC_CUT_GROUP = 1100;
 constexpr int IDC_CUT_INPUT_LABEL = 1101;

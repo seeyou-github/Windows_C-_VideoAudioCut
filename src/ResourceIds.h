@@ -6,6 +6,7 @@ constexpr unsigned int IDS_MODULE_CUT = 2002;
 constexpr unsigned int IDS_MODULE_CONCAT = 2003;
 constexpr unsigned int IDS_MODULE_FADE = 2004;
 constexpr unsigned int IDS_MODULE_CONVERT = 2005;
+constexpr unsigned int IDS_MODULE_MERGE = 2047;
 constexpr unsigned int IDS_SETTINGS = 2006;
 constexpr unsigned int IDS_CUT_TITLE = 2007;
 constexpr unsigned int IDS_LABEL_INPUT = 2008;

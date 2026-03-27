@@ -105,6 +105,26 @@ bool FileExists(const std::wstring& path) {
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+bool ContainsCodecToken(const std::wstring& codec, const wchar_t* token) {
+    std::wstring lower = codec;
+    std::transform(lower.begin(), lower.end(), lower.begin(), towlower);
+    return lower.find(token) != std::wstring::npos;
+}
+
+bool CanMuxToMp4WithoutReencode(const std::wstring& videoCodec, const std::wstring& audioCodec) {
+    const bool videoOk = videoCodec.empty() || videoCodec == L"-" ||
+                         ContainsCodecToken(videoCodec, L"h264") ||
+                         ContainsCodecToken(videoCodec, L"hevc") ||
+                         ContainsCodecToken(videoCodec, L"h265") ||
+                         ContainsCodecToken(videoCodec, L"av1") ||
+                         ContainsCodecToken(videoCodec, L"mpeg4");
+    const bool audioOk = audioCodec.empty() || audioCodec == L"-" ||
+                         ContainsCodecToken(audioCodec, L"aac") ||
+                         ContainsCodecToken(audioCodec, L"mp3") ||
+                         ContainsCodecToken(audioCodec, L"alac");
+    return videoOk && audioOk;
+}
+
 void CenterWindowToScreen(HWND hwnd, int width, int height) {
     const int screenWidth = ::GetSystemMetrics(SM_CXSCREEN);
     const int screenHeight = ::GetSystemMetrics(SM_CYSCREEN);
@@ -298,6 +318,11 @@ void MainWindow::CreateControls() {
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(IDC_NAV_CONVERT), instance_, nullptr);
 
+    controls_.navMergeButton = ::CreateWindowExW(
+        0, WC_BUTTONW, nullptr,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(IDC_NAV_MERGE), instance_, nullptr);
+
     controls_.settingsButton = ::CreateWindowExW(
         0, WC_BUTTONW, nullptr,
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
@@ -436,6 +461,22 @@ void MainWindow::CreateControls() {
         0, WC_STATICW, nullptr,
         WS_CHILD | WS_VISIBLE,
         0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(IDC_CONVERT_INFO_VALUE_FORMAT), instance_, nullptr);
+    controls_.convertInfoLabelDuration = ::CreateWindowExW(
+        0, WC_STATICW, L"\x65F6\x957F",
+        WS_CHILD | WS_VISIBLE,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    controls_.convertInfoValueDuration = ::CreateWindowExW(
+        0, WC_STATICW, nullptr,
+        WS_CHILD | WS_VISIBLE,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    controls_.convertInfoLabelSize = ::CreateWindowExW(
+        0, WC_STATICW, L"\x5927\x5C0F",
+        WS_CHILD | WS_VISIBLE,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    controls_.convertInfoValueSize = ::CreateWindowExW(
+        0, WC_STATICW, nullptr,
+        WS_CHILD | WS_VISIBLE,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     controls_.convertInfoLabelVideoCodec = ::CreateWindowExW(
         0, WC_STATICW, L"视频编码",
         WS_CHILD | WS_VISIBLE,
@@ -544,7 +585,7 @@ void MainWindow::ApplyFonts() {
 
     const HWND controls[] = {
         controls_.sidebar, controls_.navCutButton, controls_.navConcatButton, controls_.navFadeButton,
-        controls_.navConvertButton, controls_.settingsButton, controls_.contentTitle, controls_.inputLabel,
+        controls_.navConvertButton, controls_.navMergeButton, controls_.settingsButton, controls_.contentTitle, controls_.inputLabel,
         controls_.inputEdit, controls_.inputBrowse, controls_.startLabel, controls_.startDecrease,
         controls_.startTrack, controls_.fileDurationValue, controls_.startValue, controls_.startIncrease, controls_.cutDurationValue,
         controls_.endLabel, controls_.endDecrease, controls_.endValue, controls_.endIncrease,
@@ -553,6 +594,8 @@ void MainWindow::ApplyFonts() {
         controls_.convertModeVideoButton, controls_.convertModeAudioButton, controls_.convertHint,
         controls_.convertInfoLabelFile, controls_.convertInfoValueFile,
         controls_.convertInfoLabelFormat, controls_.convertInfoValueFormat,
+        controls_.convertInfoLabelDuration, controls_.convertInfoValueDuration,
+        controls_.convertInfoLabelSize, controls_.convertInfoValueSize,
         controls_.convertInfoLabelVideoCodec, controls_.convertInfoValueVideoCodec,
         controls_.convertInfoLabelVideoBitrate, controls_.convertInfoValueVideoBitrate,
         controls_.convertInfoLabelResolution, controls_.convertInfoValueResolution,
@@ -574,7 +617,7 @@ void MainWindow::ApplyFonts() {
     }
 
     const HWND navButtons[] = {
-        controls_.navCutButton, controls_.navConcatButton, controls_.navFadeButton, controls_.navConvertButton
+        controls_.navCutButton, controls_.navConcatButton, controls_.navFadeButton, controls_.navConvertButton, controls_.navMergeButton
     };
     for (HWND button : navButtons) {
         if (button != nullptr && navFont_ != nullptr) {
@@ -611,34 +654,48 @@ void MainWindow::ConfigureMediaListColumns() {
     int columnCount = 0;
 
     static const ColumnDef concatColumns[] = {
-        {L"文件名", 300},
-        {L"时长", 120},
-        {L"分辨率", 150},
-        {L"视频编码", 120},
-        {L"视频码率", 150},
-        {L"音频编码", 120},
-        {L"音频码率", 110},
+        {L"\x6587\x4EF6\x540D", 300},
+        {L"\x65F6\x957F", 120},
+        {L"\x5206\x8FA8\x7387", 150},
+        {L"\x89C6\x9891\x7F16\x7801", 120},
+        {L"\x89C6\x9891\x7801\x7387", 150},
+        {L"\x97F3\x9891\x7F16\x7801", 120},
+        {L"\x97F3\x9891\x7801\x7387", 110},
     };
     static const ColumnDef fadeColumns[] = {
-        {L"文件名", 420},
-        {L"时长", 150},
-        {L"音频编码", 160},
-        {L"音频码率", 150},
-        {L"结果", 120},
+        {L"\x6587\x4EF6\x540D", 420},
+        {L"\x65F6\x957F", 150},
+        {L"\x97F3\x9891\x7F16\x7801", 160},
+        {L"\x97F3\x9891\x7801\x7387", 150},
+        {L"\x7ED3\x679C", 120},
     };
     static const ColumnDef convertColumns[] = {
-        {L"文件名", 360},
-        {L"时长", 140},
-        {L"视频编码", 140},
-        {L"音频编码", 140},
-        {L"结果", 160},
+        {L"\x6587\x4EF6\x540D", 360},
+        {L"\x65F6\x957F", 140},
+        {L"\x89C6\x9891\x7F16\x7801", 140},
+        {L"\x97F3\x9891\x7F16\x7801", 140},
+        {L"\x7ED3\x679C", 160},
     };
+    static const ColumnDef mergeColumns[] = {
+        {L"\x7C7B\x578B", 90},
+        {L"\x683C\x5F0F", 90},
+        {L"\x65F6\x957F", 120},
+        {L"\x5206\x8FA8\x7387", 120},
+        {L"\x89C6\x9891\x7F16\x7801", 120},
+        {L"\x89C6\x9891\x7801\x7387", 120},
+        {L"\x97F3\x9891\x7F16\x7801", 120},
+        {L"\x97F3\x9891\x7801\x7387", 120},
+    };
+
     if (selectedModule_ == 2) {
         columns = fadeColumns;
         columnCount = static_cast<int>(std::size(fadeColumns));
     } else if (selectedModule_ == 3) {
         columns = convertColumns;
         columnCount = static_cast<int>(std::size(convertColumns));
+    } else if (selectedModule_ == 4) {
+        columns = mergeColumns;
+        columnCount = static_cast<int>(std::size(mergeColumns));
     } else {
         columns = concatColumns;
         columnCount = static_cast<int>(std::size(concatColumns));
@@ -670,6 +727,7 @@ void MainWindow::LayoutControls(int width, int height) {
     ::MoveWindow(controls_.navConcatButton, navLeft, navTop + (navHeight + navGap), navWidth, navHeight, TRUE);
     ::MoveWindow(controls_.navFadeButton, navLeft, navTop + ((navHeight + navGap) * 2), navWidth, navHeight, TRUE);
     ::MoveWindow(controls_.navConvertButton, navLeft, navTop + ((navHeight + navGap) * 3), navWidth, navHeight, TRUE);
+    ::MoveWindow(controls_.navMergeButton, navLeft, navTop + ((navHeight + navGap) * 4), navWidth, navHeight, TRUE);
     ::MoveWindow(controls_.settingsButton, sidebarLeft, sidebarTop + sidebarHeight + 8, sidebarWidth, settingsHeight, TRUE);
 
     const int contentLeft = sidebarLeft + sidebarWidth + 12;
@@ -708,12 +766,12 @@ void MainWindow::LayoutControls(int width, int height) {
         const int logHeight = std::max(110, remainingHeight / 3);
         const int listHeight = std::max(160, remainingHeight - logHeight - 14);
         ::MoveWindow(controls_.concatList, innerLeft, y, innerWidth, listHeight, TRUE);
-
         y += listHeight + 14;
         ::MoveWindow(controls_.logEdit, innerLeft, y, innerWidth, logHeight, TRUE);
         ::MoveWindow(controls_.placeholderStatic, innerLeft, innerTop, innerWidth, 120, TRUE);
         return;
     }
+
     if (selectedModule_ == 2) {
         const int fadeGap = 18;
         const int fadeColumnWidth = (innerWidth - fadeGap) / 2;
@@ -727,24 +785,22 @@ void MainWindow::LayoutControls(int width, int height) {
         y += 38 + 16;
         ::MoveWindow(controls_.fadeInTrack, innerLeft, y, fadeColumnWidth, 36, TRUE);
         ::MoveWindow(controls_.fadeOutTrack, innerLeft + fadeColumnWidth + fadeGap, y, fadeColumnWidth, 36, TRUE);
-
         y += 44;
         ::MoveWindow(controls_.startLabel, innerLeft, y, 138, fadeRowHeight, TRUE);
         ::MoveWindow(controls_.startValue, innerLeft + 148, y, fadeColumnWidth - 148, fadeRowHeight, TRUE);
         ::MoveWindow(controls_.endLabel, innerLeft + fadeColumnWidth + fadeGap, y, 138, fadeRowHeight, TRUE);
         ::MoveWindow(controls_.endValue, innerLeft + fadeColumnWidth + fadeGap + 148, y, fadeColumnWidth - 148, fadeRowHeight, TRUE);
-
         y += fadeRowHeight + rowGap;
         const int remainingHeight = std::max(240, contentTop + contentHeight - y - 16);
         const int logHeight = std::max(110, remainingHeight / 3);
         const int listHeight = std::max(160, remainingHeight - logHeight - 14);
         ::MoveWindow(controls_.concatList, innerLeft, y, innerWidth, listHeight, TRUE);
-
         y += listHeight + 14;
         ::MoveWindow(controls_.logEdit, innerLeft, y, innerWidth, logHeight, TRUE);
         ::MoveWindow(controls_.placeholderStatic, innerLeft, innerTop, innerWidth, 120, TRUE);
         return;
     }
+
     if (selectedModule_ == 3) {
         const int infoLabelWidth = 120;
         const int infoValueWidth = std::max(300, innerWidth - infoLabelWidth - 16);
@@ -764,14 +820,37 @@ void MainWindow::LayoutControls(int width, int height) {
         };
         placeInfoRow(controls_.convertInfoLabelFile, controls_.convertInfoValueFile);
         placeInfoRow(controls_.convertInfoLabelFormat, controls_.convertInfoValueFormat);
+        placeInfoRow(controls_.convertInfoLabelDuration, controls_.convertInfoValueDuration);
+        placeInfoRow(controls_.convertInfoLabelSize, controls_.convertInfoValueSize);
         placeInfoRow(controls_.convertInfoLabelVideoCodec, controls_.convertInfoValueVideoCodec);
         placeInfoRow(controls_.convertInfoLabelVideoBitrate, controls_.convertInfoValueVideoBitrate);
         placeInfoRow(controls_.convertInfoLabelResolution, controls_.convertInfoValueResolution);
         placeInfoRow(controls_.convertInfoLabelAudioCodec, controls_.convertInfoValueAudioCodec);
         placeInfoRow(controls_.convertInfoLabelAudioBitrate, controls_.convertInfoValueAudioBitrate);
-
         y += 8;
         const int logHeight = std::max(140, contentTop + contentHeight - y - 16);
+        ::MoveWindow(controls_.logEdit, innerLeft, y, innerWidth, logHeight, TRUE);
+        ::MoveWindow(controls_.placeholderStatic, innerLeft, innerTop, innerWidth, 120, TRUE);
+        return;
+    }
+
+    if (selectedModule_ == 4) {
+        ::MoveWindow(controls_.inputLabel, innerLeft, y + 6, 110, 28, TRUE);
+        ::MoveWindow(controls_.inputEdit, innerLeft + 110, y, innerWidth - 110 - 172, 36, TRUE);
+        ::MoveWindow(controls_.inputBrowse, innerLeft + innerWidth - 156, y, 156, 38, TRUE);
+        y += 36 + 16;
+        ::MoveWindow(controls_.startLabel, innerLeft, y + 6, 110, 28, TRUE);
+        ::MoveWindow(controls_.startValue, innerLeft + 110, y, innerWidth - 110 - 172, 36, TRUE);
+        ::MoveWindow(controls_.clearListButton, innerLeft + innerWidth - 156, y, 156, 38, TRUE);
+        y += 36 + 16;
+        const int remainingHeight = std::max(260, contentTop + contentHeight - y - 16);
+        const int listHeight = 168;
+        const int logHeight = std::max(140, remainingHeight - listHeight - 14 - 38 - rowGap);
+        ::MoveWindow(controls_.concatList, innerLeft, y, innerWidth, listHeight, TRUE);
+        y += listHeight + 14;
+        ::MoveWindow(controls_.runButton, innerLeft, y, 156, 38, TRUE);
+        ::MoveWindow(controls_.openFolderButton, innerLeft + 172, y, 236, 38, TRUE);
+        y += 38 + rowGap;
         ::MoveWindow(controls_.logEdit, innerLeft, y, innerWidth, logHeight, TRUE);
         ::MoveWindow(controls_.placeholderStatic, innerLeft, innerTop, innerWidth, 120, TRUE);
         return;
@@ -781,8 +860,8 @@ void MainWindow::LayoutControls(int width, int height) {
     ::MoveWindow(controls_.startTrack, innerLeft, y, innerWidth, trackHeight, TRUE);
     ::MoveWindow(controls_.fileDurationValue, innerLeft + std::max(0, innerWidth - 320), y + trackHeight, 320, 28, TRUE);
     ::ShowWindow(controls_.cutDurationValue, SW_SHOW);
-
     y += trackHeight + 52;
+
     const int cutLabelWidth = 110;
     ::MoveWindow(controls_.startLabel, innerLeft, y + 4, cutLabelWidth, 28, TRUE);
     ::MoveWindow(controls_.startValue, innerLeft + cutLabelWidth, y, valueWidth, 32, TRUE);
@@ -810,6 +889,10 @@ void MainWindow::LayoutControls(int width, int height) {
     ::MoveWindow(controls_.convertInfoValueFile, innerLeft, y, 0, 0, TRUE);
     ::MoveWindow(controls_.convertInfoLabelFormat, innerLeft, y, 0, 0, TRUE);
     ::MoveWindow(controls_.convertInfoValueFormat, innerLeft, y, 0, 0, TRUE);
+    ::MoveWindow(controls_.convertInfoLabelDuration, innerLeft, y, 0, 0, TRUE);
+    ::MoveWindow(controls_.convertInfoValueDuration, innerLeft, y, 0, 0, TRUE);
+    ::MoveWindow(controls_.convertInfoLabelSize, innerLeft, y, 0, 0, TRUE);
+    ::MoveWindow(controls_.convertInfoValueSize, innerLeft, y, 0, 0, TRUE);
     ::MoveWindow(controls_.convertInfoLabelVideoCodec, innerLeft, y, 0, 0, TRUE);
     ::MoveWindow(controls_.convertInfoValueVideoCodec, innerLeft, y, 0, 0, TRUE);
     ::MoveWindow(controls_.convertInfoLabelVideoBitrate, innerLeft, y, 0, 0, TRUE);
@@ -839,6 +922,7 @@ void MainWindow::RefreshText() {
     ::SetWindowTextW(controls_.navConcatButton, LoadStringResource(IDS_MODULE_CONCAT).c_str());
     ::SetWindowTextW(controls_.navFadeButton, LoadStringResource(IDS_MODULE_FADE).c_str());
     ::SetWindowTextW(controls_.navConvertButton, LoadStringResource(IDS_MODULE_CONVERT).c_str());
+    ::SetWindowTextW(controls_.navMergeButton, LoadStringResource(IDS_MODULE_MERGE).c_str());
     ::SetWindowTextW(controls_.contentTitle, LoadStringResource(IDS_CUT_TITLE).c_str());
     ::SetWindowTextW(controls_.cutGroup, LoadStringResource(IDS_CUT_TITLE).c_str());
     ::SetWindowTextW(controls_.inputLabel, LoadStringResource(IDS_LABEL_INPUT).c_str());
@@ -858,10 +942,12 @@ void MainWindow::RefreshModule() {
     const bool concatVisible = selectedModule_ == 1;
     const bool fadeVisible = selectedModule_ == 2;
     const bool convertVisible = selectedModule_ == 3;
+    const bool mergeVisible = selectedModule_ == 4;
     ::EnableWindow(controls_.navCutButton, selectedModule_ != 0);
     ::EnableWindow(controls_.navConcatButton, selectedModule_ != 1);
     ::EnableWindow(controls_.navFadeButton, selectedModule_ != 2);
     ::EnableWindow(controls_.navConvertButton, selectedModule_ != 3);
+    ::EnableWindow(controls_.navMergeButton, selectedModule_ != 4);
 
     const HWND sharedControls[] = {
         controls_.cutGroup, controls_.inputLabel, controls_.inputEdit, controls_.inputBrowse,
@@ -880,19 +966,24 @@ void MainWindow::RefreshModule() {
         controls_.fadeInTrack, controls_.fadeOutTrack
     };
     const HWND convertOnlyControls[] = {
-        controls_.convertHint,
         controls_.convertInfoLabelFile, controls_.convertInfoValueFile,
         controls_.convertInfoLabelFormat, controls_.convertInfoValueFormat,
+        controls_.convertInfoLabelDuration, controls_.convertInfoValueDuration,
+        controls_.convertInfoLabelSize, controls_.convertInfoValueSize,
         controls_.convertInfoLabelVideoCodec, controls_.convertInfoValueVideoCodec,
         controls_.convertInfoLabelVideoBitrate, controls_.convertInfoValueVideoBitrate,
         controls_.convertInfoLabelResolution, controls_.convertInfoValueResolution,
         controls_.convertInfoLabelAudioCodec, controls_.convertInfoValueAudioCodec,
-        controls_.convertInfoLabelAudioBitrate, controls_.convertInfoValueAudioBitrate,
+        controls_.convertInfoLabelAudioBitrate, controls_.convertInfoValueAudioBitrate
+    };
+
+    const HWND convertButtons[] = {
+        controls_.convertHint,
         controls_.convertToMp3Button, controls_.convertToMp4Button
     };
 
     for (HWND control : sharedControls) {
-        ::ShowWindow(control, (cutVisible || concatVisible || fadeVisible || convertVisible) ? SW_SHOW : SW_HIDE);
+        ::ShowWindow(control, (cutVisible || concatVisible || fadeVisible || convertVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
     }
     for (HWND control : cutOnlyControls) {
         ::ShowWindow(control, cutVisible ? SW_SHOW : SW_HIDE);
@@ -906,13 +997,16 @@ void MainWindow::RefreshModule() {
     for (HWND control : convertOnlyControls) {
         ::ShowWindow(control, convertVisible ? SW_SHOW : SW_HIDE);
     }
-    ::ShowWindow(controls_.startLabel, (cutVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(controls_.startValue, (cutVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
+    for (HWND control : convertButtons) {
+        ::ShowWindow(control, convertVisible ? SW_SHOW : SW_HIDE);
+    }
+    ::ShowWindow(controls_.startLabel, (cutVisible || fadeVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(controls_.startValue, (cutVisible || fadeVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
     ::ShowWindow(controls_.endLabel, (cutVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
     ::ShowWindow(controls_.endValue, (cutVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(controls_.runButton, (cutVisible || concatVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(controls_.concatList, (concatVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
-    ::ShowWindow(controls_.clearListButton, (concatVisible || fadeVisible) ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(controls_.runButton, (cutVisible || concatVisible || fadeVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(controls_.concatList, (concatVisible || fadeVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
+    ::ShowWindow(controls_.clearListButton, (concatVisible || fadeVisible || mergeVisible) ? SW_SHOW : SW_HIDE);
     ::ShowWindow(controls_.convertModeVideoButton, SW_HIDE);
     ::ShowWindow(controls_.convertModeAudioButton, SW_HIDE);
 
@@ -990,6 +1084,36 @@ void MainWindow::RefreshModule() {
         UpdateLogPanelState();
         return;
     }
+
+    if (mergeVisible) {
+        ConfigureMediaListColumns();
+        ::SetWindowTextW(controls_.contentTitle, LoadStringResource(IDS_MODULE_MERGE).c_str());
+        ::SetWindowTextW(controls_.cutGroup, LoadStringResource(IDS_MODULE_MERGE).c_str());
+        ::SetWindowTextW(controls_.inputLabel, L"\x89C6\x9891\x6587\x4EF6");
+        ::SetWindowTextW(controls_.startLabel, L"\x97F3\x9891\x6587\x4EF6");
+        ::SetWindowTextW(controls_.inputBrowse, L"\x9009\x62E9\x89C6\x9891");
+        ::SetWindowTextW(controls_.clearListButton, L"\x9009\x62E9\x97F3\x9891");
+        ::SetWindowTextW(controls_.runButton, L"\x5F00\x59CB\x5408\x5E76");
+        ::SetWindowTextW(controls_.openFolderButton, LoadStringResource(IDS_BUTTON_OPEN_FOLDER).c_str());
+        ::SetWindowTextW(controls_.convertInfoLabelFile, L"\x89C6\x9891\x6587\x4EF6");
+        ::SetWindowTextW(controls_.convertInfoLabelFormat, L"\x683C\x5F0F");
+        ::SetWindowTextW(controls_.convertInfoLabelDuration, L"\x65F6\x957F");
+        ::SetWindowTextW(controls_.convertInfoLabelSize, L"\x5927\x5C0F");
+        ::SetWindowTextW(controls_.convertInfoLabelVideoCodec, L"\x89C6\x9891\x7F16\x7801");
+        ::SetWindowTextW(controls_.convertInfoLabelVideoBitrate, L"\x89C6\x9891\x7801\x7387");
+        ::SetWindowTextW(controls_.convertInfoLabelResolution, L"\x5206\x8FA8\x7387");
+        ::SetWindowTextW(controls_.convertInfoLabelAudioCodec, L"\x97F3\x9891\x7F16\x7801");
+        ::SetWindowTextW(controls_.convertInfoLabelAudioBitrate, L"\x97F3\x9891\x7801\x7387");
+        ::SetWindowTextW(controls_.inputEdit, mergeVideoPath_.empty() ? L"" : std::filesystem::path(mergeVideoPath_).filename().wstring().c_str());
+        ::SetWindowTextW(controls_.startValue, mergeAudioPath_.empty() ? L"" : std::filesystem::path(mergeAudioPath_).filename().wstring().c_str());
+        RefreshConcatList();
+        ::SetWindowTextW(controls_.placeholderStatic, L"");
+        ::ShowWindow(controls_.placeholderStatic, SW_HIDE);
+        UpdatePrimaryActionState();
+        UpdateLogPanelState();
+        return;
+    }
+
 
     unsigned int placeholderId = IDS_PLACEHOLDER_CONCAT;
     unsigned int titleId = IDS_MODULE_CONCAT;
@@ -1268,6 +1392,72 @@ void MainWindow::OpenConvertFilesDialog() {
     ResetCutResultState();
     ::SetWindowTextW(controls_.inputEdit, std::filesystem::path(filePath).filename().wstring().c_str());
     RefreshConvertInfo();
+}
+
+void MainWindow::OpenMergeVideoDialog() {
+    wchar_t filePath[MAX_PATH] = {};
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = hwnd_;
+    dialog.lpstrFile = filePath;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrFilter = L"Video Files\0*.mp4;*.mkv;*.mov;*.avi;*.flv;*.wmv;*.webm\0All Files\0*.*\0";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    dialog.lpstrTitle = L"\x9009\x62E9\x89C6\x9891\x6587\x4EF6";
+    if (!::GetOpenFileNameW(&dialog)) {
+        return;
+    }
+    mergeVideoPath_ = filePath;
+    mergeVideoItem_ = {};
+    if (!TryProbeConcatItem(mergeVideoPath_, mergeVideoItem_)) {
+        mergeVideoItem_.filePath = mergeVideoPath_;
+        mergeVideoItem_.fileName = std::filesystem::path(mergeVideoPath_).filename().wstring();
+        if (mergeVideoItem_.durationText.empty()) mergeVideoItem_.durationText = L"-";
+        if (mergeVideoItem_.sizeText.empty()) mergeVideoItem_.sizeText = L"-";
+        if (mergeVideoItem_.resolutionText.empty()) mergeVideoItem_.resolutionText = L"-";
+        if (mergeVideoItem_.videoCodec.empty()) mergeVideoItem_.videoCodec = L"-";
+        if (mergeVideoItem_.videoBitrate.empty()) mergeVideoItem_.videoBitrate = L"-";
+        if (mergeVideoItem_.audioCodec.empty()) mergeVideoItem_.audioCodec = L"-";
+        if (mergeVideoItem_.audioBitrate.empty()) mergeVideoItem_.audioBitrate = L"-";
+    }
+    lastOutputPath_.clear();
+    cutSucceeded_ = false;
+    ::SetWindowTextW(controls_.inputEdit, std::filesystem::path(mergeVideoPath_).filename().wstring().c_str());
+    RefreshConcatList();
+    UpdatePrimaryActionState();
+}
+
+void MainWindow::OpenMergeAudioDialog() {
+    wchar_t filePath[MAX_PATH] = {};
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = hwnd_;
+    dialog.lpstrFile = filePath;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrFilter = L"Audio Files\0*.mp3;*.wav;*.flac;*.m4a;*.aac\0All Files\0*.*\0";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    dialog.lpstrTitle = L"\x9009\x62E9\x97F3\x9891\x6587\x4EF6";
+    if (!::GetOpenFileNameW(&dialog)) {
+        return;
+    }
+    mergeAudioPath_ = filePath;
+    mergeAudioItem_ = {};
+    if (!TryProbeConcatItem(mergeAudioPath_, mergeAudioItem_)) {
+        mergeAudioItem_.filePath = mergeAudioPath_;
+        mergeAudioItem_.fileName = std::filesystem::path(mergeAudioPath_).filename().wstring();
+        if (mergeAudioItem_.durationText.empty()) mergeAudioItem_.durationText = L"-";
+        if (mergeAudioItem_.sizeText.empty()) mergeAudioItem_.sizeText = L"-";
+        if (mergeAudioItem_.audioCodec.empty()) mergeAudioItem_.audioCodec = L"-";
+        if (mergeAudioItem_.audioBitrate.empty()) mergeAudioItem_.audioBitrate = L"-";
+        if (mergeAudioItem_.videoCodec.empty()) mergeAudioItem_.videoCodec = L"-";
+        if (mergeAudioItem_.videoBitrate.empty()) mergeAudioItem_.videoBitrate = L"-";
+        if (mergeAudioItem_.resolutionText.empty()) mergeAudioItem_.resolutionText = L"-";
+    }
+    lastOutputPath_.clear();
+    cutSucceeded_ = false;
+    ::SetWindowTextW(controls_.startValue, std::filesystem::path(mergeAudioPath_).filename().wstring().c_str());
+    RefreshConcatList();
+    UpdatePrimaryActionState();
 }
 
 void MainWindow::StartMediaProbe(int module, const std::vector<std::wstring>& inputPaths, bool singleItem) {
@@ -1915,6 +2105,58 @@ void MainWindow::StartConvertToMp4Task() {
     });
 }
 
+void MainWindow::StartMergeTask() {
+    if (taskRunning_ || runner_.IsRunning()) {
+        return;
+    }
+    if (!ValidateFfmpegPath()) {
+        ::MessageBoxW(hwnd_, LoadStringResource(IDS_STATUS_INVALID_FFMPEG).c_str(),
+                      LoadStringResource(IDS_SETTINGS_TITLE).c_str(), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (mergeVideoPath_.empty() || mergeAudioPath_.empty()) {
+        ::MessageBoxW(hwnd_, L"F7Q4809bE9C691e87NF6T8CF391e87NF6",
+                      L"F3C691T08^76", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    const bool useMp4Container = CanMuxToMp4WithoutReencode(mergeVideoItem_.videoCodec, mergeAudioItem_.audioCodec);
+    std::wstring outputPath = BuildMergeOutputPath(mergeVideoPath_);
+    if (!useMp4Container && !outputPath.empty()) {
+        outputPath = std::filesystem::path(outputPath).replace_extension(L".mkv").wstring();
+    }
+    if (outputPath.empty()) {
+        return;
+    }
+    lastOutputPath_ = outputPath;
+    ClearLog();
+    AppendLog(L"93Q65C691ÿ1A" + mergeVideoPath_);
+    AppendLog(L"93Q65F391ÿ1A" + mergeAudioPath_);
+    AppendLog(L"93QFAe87NF6ÿ1A" + outputPath);
+    std::wstringstream args;
+    args << L"-hide_banner -y -i " << EscapeArgument(mergeVideoPath_)
+         << L" -i " << EscapeArgument(mergeAudioPath_)
+         << L" -map 0:v:0 -map 1:a:0 -c copy -shortest " << EscapeArgument(outputPath);
+    const std::wstring fullCommand = L""" + config_.ffmpegPath + L"" " + args.str();
+    AppendLog(L"FFmpeg T7DNE4ÿ1A");
+    AppendLog(fullCommand);
+    ::EnableWindow(controls_.runButton, FALSE);
+    ::SetWindowTextW(controls_.runButton, L"T08^76N2D...");
+    taskRunning_ = true;
+    activeTaskModule_ = 4;
+    if (!runner_.Start(
+        config_.ffmpegPath,
+        args.str(),
+        [target = hwnd_](const std::wstring& line) {
+            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+        },
+        [target = hwnd_](int exitCode) {
+            ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
+        })) {
+        taskRunning_ = false;
+        ::EnableWindow(controls_.runButton, TRUE);
+    }
+}
+
 void MainWindow::AutoDetectInputDuration() {
     const std::wstring inputPath = inputFilePath_;
     if (inputPath.empty() || !FileExists(inputPath)) {
@@ -2051,6 +2293,10 @@ void MainWindow::UpdatePrimaryActionState() {
             enabled = !concatInputPaths_.empty();
         } else if (selectedModule_ == 2) {
             enabled = !fadeInputPaths_.empty();
+        } else if (selectedModule_ == 3) {
+            enabled = !convertInputPaths_.empty();
+        } else if (selectedModule_ == 4) {
+            enabled = !mergeVideoPath_.empty() && !mergeAudioPath_.empty();
         }
     }
     ::EnableWindow(controls_.runButton, enabled ? TRUE : FALSE);
@@ -2062,11 +2308,30 @@ void MainWindow::RefreshConcatList() {
         return;
     }
 
+    std::vector<ConcatListItem> mergeItems;
     const std::vector<ConcatListItem>* items = &concatItems_;
     if (selectedModule_ == 2) {
         items = &fadeItems_;
     } else if (selectedModule_ == 3) {
         items = &convertItems_;
+    } else if (selectedModule_ == 4) {
+        if (!mergeVideoPath_.empty()) {
+            ConcatListItem video = mergeVideoItem_;
+            video.fileName = L"\x89C6\x9891";
+            if (video.resultText.empty()) {
+                video.resultText = std::filesystem::path(mergeVideoPath_).filename().wstring();
+            }
+            mergeItems.push_back(video);
+        }
+        if (!mergeAudioPath_.empty()) {
+            ConcatListItem audio = mergeAudioItem_;
+            audio.fileName = L"\x97F3\x9891";
+            if (audio.resultText.empty()) {
+                audio.resultText = std::filesystem::path(mergeAudioPath_).filename().wstring();
+            }
+            mergeItems.push_back(audio);
+        }
+        items = &mergeItems;
     }
     ::SendMessageW(controls_.concatList, WM_SETREDRAW, FALSE, 0);
     ::SendMessageW(controls_.concatList, LVM_DELETEALLITEMS, 0, 0);
@@ -2080,13 +2345,19 @@ void MainWindow::RefreshConcatList() {
         listItem.pszText = const_cast<LPWSTR>(item.fileName.c_str());
         ::SendMessageW(controls_.concatList, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&listItem));
 
-        const std::vector<std::wstring> columns =
-            selectedModule_ == 2
-                ? std::vector<std::wstring>{item.durationText, item.audioCodec, item.audioBitrate, item.resultText}
-            : selectedModule_ == 3
-                ? std::vector<std::wstring>{item.durationText, item.videoCodec, item.audioCodec, item.resultText}
-                : std::vector<std::wstring>{item.durationText, item.resolutionText, item.videoCodec,
-                                            item.videoBitrate, item.audioCodec, item.audioBitrate};
+        std::vector<std::wstring> columns;
+        if (selectedModule_ == 2) {
+            columns = {item.durationText, item.audioCodec, item.audioBitrate, item.resultText};
+        } else if (selectedModule_ == 3) {
+            columns = {item.durationText, item.videoCodec, item.audioCodec, item.resultText};
+        } else if (selectedModule_ == 4) {
+            const std::wstring format = item.filePath.empty() ? L"-" : std::filesystem::path(item.filePath).extension().wstring();
+            columns = {format, item.durationText, item.resolutionText, item.videoCodec,
+                       item.videoBitrate, item.audioCodec, item.audioBitrate};
+        } else {
+            columns = {item.durationText, item.resolutionText, item.videoCodec,
+                       item.videoBitrate, item.audioCodec, item.audioBitrate};
+        }
         for (int subItem = 0; subItem < static_cast<int>(columns.size()); ++subItem) {
             LVITEMW subItemData{};
             subItemData.iItem = index;
@@ -2154,6 +2425,8 @@ void MainWindow::RefreshConvertInfo() {
     } else {
         ::SetWindowTextW(controls_.convertInfoValueFormat, L"-");
     }
+    ::SetWindowTextW(controls_.convertInfoValueDuration, hasFile ? item.durationText.c_str() : L"-");
+    ::SetWindowTextW(controls_.convertInfoValueSize, hasFile ? item.sizeText.c_str() : L"-");
     ::SetWindowTextW(controls_.convertInfoValueVideoCodec, hasFile ? item.videoCodec.c_str() : L"-");
     ::SetWindowTextW(controls_.convertInfoValueVideoBitrate, hasFile ? item.videoBitrate.c_str() : L"-");
     ::SetWindowTextW(controls_.convertInfoValueResolution, hasFile ? item.resolutionText.c_str() : L"-");
@@ -2220,6 +2493,23 @@ std::wstring MainWindow::FormatBitrateText(long long bitrate) const {
         swprintf_s(buffer, L"%.2f Mbps", static_cast<double>(bitrate) / 1000000.0);
     } else {
         swprintf_s(buffer, L"%.0f kbps", static_cast<double>(bitrate) / 1000.0);
+    }
+    return buffer;
+}
+
+std::wstring MainWindow::FormatFileSizeText(unsigned long long sizeBytes) const {
+    if (sizeBytes == 0) {
+        return L"-";
+    }
+    wchar_t buffer[32] = {};
+    if (sizeBytes >= 1024ull * 1024ull * 1024ull) {
+        swprintf_s(buffer, L"%.2f GB", static_cast<double>(sizeBytes) / (1024.0 * 1024.0 * 1024.0));
+    } else if (sizeBytes >= 1024ull * 1024ull) {
+        swprintf_s(buffer, L"%.2f MB", static_cast<double>(sizeBytes) / (1024.0 * 1024.0));
+    } else if (sizeBytes >= 1024ull) {
+        swprintf_s(buffer, L"%.2f KB", static_cast<double>(sizeBytes) / 1024.0);
+    } else {
+        swprintf_s(buffer, L"%llu B", sizeBytes);
     }
     return buffer;
 }
@@ -2337,6 +2627,16 @@ std::wstring MainWindow::BuildFfprobePath() const {
     return config_.ffprobePath;
 }
 
+std::wstring MainWindow::BuildMergeOutputPath(const std::wstring& videoPath) const {
+    if (videoPath.empty()) {
+        return L"";
+    }
+    const std::filesystem::path input(videoPath);
+    const std::filesystem::path folder = input.parent_path();
+    const std::wstring stem = input.stem().wstring();
+    return (folder / (stem + L"_merged.mp4")).wstring();
+}
+
 bool MainWindow::TryProbeDurationMilliseconds(const std::wstring& inputPath, int& durationMilliseconds) const {
     durationMilliseconds = 0;
 
@@ -2431,6 +2731,9 @@ bool MainWindow::TryProbeConcatItem(const std::wstring& inputPath, ConcatListIte
     item = {};
     item.filePath = inputPath;
     item.fileName = std::filesystem::path(inputPath).filename().wstring();
+    std::error_code fileSizeError;
+    const auto fileSize = std::filesystem::file_size(std::filesystem::path(inputPath), fileSizeError);
+    item.sizeText = fileSizeError ? L"-" : FormatFileSizeText(fileSize);
     item.durationText = L"-";
     item.resolutionText = L"-";
     item.videoCodec = L"-";
@@ -3203,6 +3506,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 OpenFadeFilesDialog();
             } else if (selectedModule_ == 3) {
                 OpenConvertFilesDialog();
+            } else if (selectedModule_ == 4) {
+                OpenMergeVideoDialog();
             } else {
                 OpenInputFileDialog();
             }
@@ -3215,6 +3520,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 StartConcatTask();
             } else if (selectedModule_ == 2) {
                 StartFadeTask();
+            } else if (selectedModule_ == 4) {
+                StartMergeTask();
             } else {
                 StartCutTask();
             }
@@ -3249,6 +3556,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 ::SetWindowTextW(controls_.inputEdit, L"");
                 ClearLog();
                 RefreshConvertInfo();
+            } else if (selectedModule_ == 4) {
+                OpenMergeAudioDialog();
             } else {
                 concatInputPaths_.clear();
                 concatItems_.clear();
@@ -3295,6 +3604,12 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_NAV_CONVERT:
             cutSucceeded_ = false;
             selectedModule_ = 3;
+            ClearLog();
+            RefreshModule();
+            return 0;
+        case IDC_NAV_MERGE:
+            cutSucceeded_ = false;
+            selectedModule_ = 4;
             ClearLog();
             RefreshModule();
             return 0;
@@ -3477,7 +3792,7 @@ void MainWindow::DrawOwnerDrawButton(const DRAWITEMSTRUCT* drawItem) const {
          (selectedModule_ == 1 && !concatInputPaths_.empty()) ||
          (selectedModule_ == 2 && !fadeInputPaths_.empty()));
     const bool navButton = drawItem->CtlID == IDC_NAV_CUT || drawItem->CtlID == IDC_NAV_CONCAT ||
-        drawItem->CtlID == IDC_NAV_FADE || drawItem->CtlID == IDC_NAV_CONVERT;
+        drawItem->CtlID == IDC_NAV_FADE || drawItem->CtlID == IDC_NAV_CONVERT || drawItem->CtlID == IDC_NAV_MERGE;
     const bool convertModeButton =
         drawItem->CtlID == IDC_CONVERT_MODE_VIDEO || drawItem->CtlID == IDC_CONVERT_MODE_AUDIO;
     const bool settingsBrowseButton =
@@ -3486,7 +3801,8 @@ void MainWindow::DrawOwnerDrawButton(const DRAWITEMSTRUCT* drawItem) const {
         (drawItem->CtlID == IDC_NAV_CUT && selectedModule_ == 0) ||
         (drawItem->CtlID == IDC_NAV_CONCAT && selectedModule_ == 1) ||
         (drawItem->CtlID == IDC_NAV_FADE && selectedModule_ == 2) ||
-        (drawItem->CtlID == IDC_NAV_CONVERT && selectedModule_ == 3);
+        (drawItem->CtlID == IDC_NAV_CONVERT && selectedModule_ == 3) ||
+        (drawItem->CtlID == IDC_NAV_MERGE && selectedModule_ == 4);
     const bool convertModeActive =
         (drawItem->CtlID == IDC_CONVERT_MODE_VIDEO && convertMode_ == 0) ||
         (drawItem->CtlID == IDC_CONVERT_MODE_AUDIO && convertMode_ == 1);
