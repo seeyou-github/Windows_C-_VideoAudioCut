@@ -72,3 +72,6 @@ constexpr int WM_APP_RUN_LOG = WM_APP + 1;
 constexpr int WM_APP_RUN_FINISHED = WM_APP + 2;
 constexpr int WM_APP_DURATION_PROBED = WM_APP + 3;
 constexpr int WM_APP_FADE_ITEM_STATUS = WM_APP + 4;
+constexpr int WM_APP_MEDIA_PROBE_ITEM = WM_APP + 5;
+constexpr int WM_APP_MEDIA_PROBE_FINISHED = WM_APP + 6;
+constexpr int WM_APP_RUN_LOG_BATCH = WM_APP + 7;

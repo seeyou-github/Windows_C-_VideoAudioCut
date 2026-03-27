@@ -31,6 +31,10 @@
 
 namespace {
 
+struct RunLogBatchMessage {
+    std::vector<std::wstring> lines;
+};
+
 constexpr wchar_t kWindowClassName[] = L"VideoAudioCutMainWindow";
 constexpr wchar_t kRangeSliderClassName[] = L"VideoAudioCutRangeSlider";
 constexpr int kSidebarWidth = 228;
@@ -73,6 +77,24 @@ bool PostOwnedMessage(HWND hwnd, UINT message, WPARAM wParam, std::unique_ptr<Me
         return false;
     }
     return true;
+}
+
+constexpr size_t kLogBatchSize = 16;
+
+void FlushPendingLogLines(HWND hwnd, std::vector<std::wstring>& pendingLines) {
+    if (pendingLines.empty()) {
+        return;
+    }
+    auto batch = std::make_unique<RunLogBatchMessage>();
+    batch->lines.swap(pendingLines);
+    PostOwnedMessage(hwnd, WM_APP_RUN_LOG_BATCH, 0, std::move(batch));
+}
+
+void QueueLogLine(HWND hwnd, std::vector<std::wstring>& pendingLines, const std::wstring& line) {
+    pendingLines.push_back(line);
+    if (pendingLines.size() >= kLogBatchSize) {
+        FlushPendingLogLines(hwnd, pendingLines);
+    }
 }
 
 bool FileExists(const std::wstring& path) {
@@ -130,6 +152,7 @@ MainWindow::MainWindow()
       taskRunning_(false),
       convertCanToMp3_(false),
       convertCanToMp4_(false),
+      mediaProbeRequestId_(0),
       shuttingDown_(false),
       backgroundThreads_() {
 }
@@ -1072,6 +1095,7 @@ void MainWindow::OpenConcatFilesDialog() {
     ::SetWindowTextW(controls_.inputEdit, summary.c_str());
     UpdatePrimaryActionState();
     RefreshConcatList();
+    StartMediaProbe(1, concatInputPaths_, false);
 }
 
 void MainWindow::OpenFadeFilesDialog() {
@@ -1132,6 +1156,7 @@ void MainWindow::OpenFadeFilesDialog() {
     ::SetWindowTextW(controls_.inputEdit, summary.c_str());
     UpdatePrimaryActionState();
     RefreshConcatList();
+    StartMediaProbe(2, fadeInputPaths_, false);
 }
 
 void MainWindow::OpenConvertFilesDialog() {
@@ -1178,6 +1203,48 @@ void MainWindow::OpenConvertFilesDialog() {
     ResetCutResultState();
     ::SetWindowTextW(controls_.inputEdit, std::filesystem::path(filePath).filename().wstring().c_str());
     RefreshConvertInfo();
+}
+
+void MainWindow::StartMediaProbe(int module, const std::vector<std::wstring>& inputPaths, bool singleItem) {
+    const int requestId = ++mediaProbeRequestId_;
+    const HWND target = hwnd_;
+    SpawnBackgroundTask([this, target, requestId, module, inputPaths, singleItem]() {
+        for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
+            if (shuttingDown_.load()) {
+                return;
+            }
+            ConcatListItem item{};
+            if (!TryProbeConcatItem(inputPaths[index], item)) {
+                item.filePath = inputPaths[index];
+                item.fileName = std::filesystem::path(inputPaths[index]).filename().wstring();
+                if (item.durationText.empty()) item.durationText = L"-";
+                if (item.resolutionText.empty()) item.resolutionText = L"-";
+                if (item.videoCodec.empty()) item.videoCodec = L"-";
+                if (item.videoBitrate.empty()) item.videoBitrate = L"-";
+                if (item.audioCodec.empty()) item.audioCodec = L"错误：无法识别媒体信息";
+                if (item.audioBitrate.empty()) item.audioBitrate = L"-";
+                item.hasError = true;
+            }
+            if (module == 2 && item.resultText.empty()) {
+                item.resultText = L"待处理";
+            } else if (item.resultText.empty()) {
+                item.resultText = L"-";
+            }
+            auto message = std::make_unique<MediaProbeItemMessage>();
+            message->requestId = requestId;
+            message->module = module;
+            message->index = index;
+            message->singleItem = singleItem;
+            message->item = std::move(item);
+            if (!PostOwnedMessage(target, WM_APP_MEDIA_PROBE_ITEM, 0, std::move(message))) {
+                return;
+            }
+        }
+        auto finished = std::make_unique<MediaProbeFinishedMessage>();
+        finished->requestId = requestId;
+        finished->module = module;
+        PostOwnedMessage(target, WM_APP_MEDIA_PROBE_FINISHED, 0, std::move(finished));
+    });
 }
 
 bool MainWindow::PromptOutputFolder(std::wstring& folderPath) {
@@ -1328,13 +1395,15 @@ void MainWindow::StartCutTask() {
     taskRunning_ = true;
     activeTaskModule_ = 0;
 
+    auto pendingLines = std::make_shared<std::vector<std::wstring>>();
     if (!runner_.Start(
         config_.ffmpegPath,
         args.str(),
-        [target = hwnd_](const std::wstring& line) {
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+        [target = hwnd_, pendingLines](const std::wstring& line) {
+            QueueLogLine(target, *pendingLines, line);
         },
-        [target = hwnd_](int exitCode) {
+        [target = hwnd_, pendingLines](int exitCode) {
+            FlushPendingLogLines(target, *pendingLines);
             ::PostMessageW(target, WM_APP_RUN_FINISHED, static_cast<WPARAM>(exitCode), 0);
         })) {
         taskRunning_ = false;
@@ -1395,13 +1464,15 @@ void MainWindow::StartConcatTask() {
     taskRunning_ = true;
     activeTaskModule_ = 1;
 
+    auto pendingLines = std::make_shared<std::vector<std::wstring>>();
     if (!runner_.Start(
         config_.ffmpegPath,
         args.str(),
-        [target = hwnd_](const std::wstring& line) {
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+        [target = hwnd_, pendingLines](const std::wstring& line) {
+            QueueLogLine(target, *pendingLines, line);
         },
-        [target = hwnd_, listFilePath](int exitCode) {
+        [target = hwnd_, listFilePath, pendingLines](int exitCode) {
+            FlushPendingLogLines(target, *pendingLines);
             if (!listFilePath.empty()) {
                 std::error_code errorCode;
                 std::filesystem::remove(std::filesystem::path(listFilePath), errorCode);
@@ -1443,6 +1514,8 @@ void MainWindow::StartFadeTask() {
     const int fadeOutMilliseconds = fadeOutMilliseconds_;
     SpawnBackgroundTask([this, target, ffmpegPath, inputPaths, fadeInMilliseconds, fadeOutMilliseconds]() {
         int finalExitCode = 0;
+        std::vector<std::wstring> pendingLines;
+        pendingLines.reserve(kLogBatchSize);
         for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
             const auto& inputPath = inputPaths[index];
             ConcatListItem info{};
@@ -1479,15 +1552,16 @@ void MainWindow::StartFadeTask() {
             args << L" " << EscapeArgument(outputPath);
 
             const std::wstring fullCommand = L"\"" + ffmpegPath + L"\" " + args.str();
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输入文件：" + inputPath}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输出文件：" + outputPath}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"FFmpeg 命令："}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{fullCommand}));
+            QueueLogLine(target, pendingLines, L"输入文件：" + inputPath);
+            QueueLogLine(target, pendingLines, L"输出文件：" + outputPath);
+            QueueLogLine(target, pendingLines, L"FFmpeg 命令：");
+            QueueLogLine(target, pendingLines, fullCommand);
+
             std::wstring lastErrorLine;
             const int exitCode = RunProcessCapture(
                 ffmpegPath,
                 args.str(),
-                [target, &lastErrorLine](const std::wstring& line) {
+                [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
                     std::wstring trimmed = line;
                     while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                         trimmed.pop_back();
@@ -1495,8 +1569,9 @@ void MainWindow::StartFadeTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+                    QueueLogLine(target, pendingLines, line);
                 });
+            FlushPendingLogLines(target, pendingLines);
             if (exitCode != 0) {
                 finalExitCode = exitCode;
                 auto* status = new FadeItemStatusMessage{};
@@ -1543,6 +1618,8 @@ void MainWindow::StartConvertTask() {
     const std::vector<std::wstring> inputPaths = convertInputPaths_;
     SpawnBackgroundTask([this, target, ffmpegPath, inputPaths]() {
         int finalExitCode = 0;
+        std::vector<std::wstring> pendingLines;
+        pendingLines.reserve(kLogBatchSize);
         for (int index = 0; index < static_cast<int>(inputPaths.size()); ++index) {
             const std::wstring& inputPath = inputPaths[index];
             const std::filesystem::path inputFile(inputPath);
@@ -1588,16 +1665,17 @@ void MainWindow::StartConvertTask() {
             }
 
             const std::wstring fullCommand = L"\"" + ffmpegPath + L"\" " + args.str();
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输入文件：" + inputPath}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"输出文件：" + outputPath}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{L"FFmpeg 命令："}));
-            PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{fullCommand}));
+            QueueLogLine(target, pendingLines, L"输入文件：" + inputPath);
+            QueueLogLine(target, pendingLines, L"输出文件：" + outputPath);
+            QueueLogLine(target, pendingLines, L"FFmpeg 命令：");
+            QueueLogLine(target, pendingLines, fullCommand);
+
 
             std::wstring lastErrorLine;
             const int exitCode = RunProcessCapture(
                 ffmpegPath,
                 args.str(),
-                [target, &lastErrorLine](const std::wstring& line) {
+                [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
                     std::wstring trimmed = line;
                     while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                         trimmed.pop_back();
@@ -1605,8 +1683,9 @@ void MainWindow::StartConvertTask() {
                     if (!trimmed.empty()) {
                         lastErrorLine = trimmed;
                     }
-                    PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+                    QueueLogLine(target, pendingLines, line);
                 });
+            FlushPendingLogLines(target, pendingLines);
 
             if (exitCode != 0) {
                 finalExitCode = exitCode;
@@ -1675,11 +1754,13 @@ void MainWindow::StartConvertToMp3Task() {
 
     const HWND target = hwnd_;
     SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
+        std::vector<std::wstring> pendingLines;
+        pendingLines.reserve(kLogBatchSize);
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
             args,
-            [target, &lastErrorLine](const std::wstring& line) {
+            [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
                 std::wstring trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                     trimmed.pop_back();
@@ -1687,8 +1768,9 @@ void MainWindow::StartConvertToMp3Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+                QueueLogLine(target, pendingLines, line);
             });
+        FlushPendingLogLines(target, pendingLines);
         auto status = std::make_unique<FadeItemStatusMessage>();
         status->index = 0;
         status->success = exitCode == 0;
@@ -1741,11 +1823,13 @@ void MainWindow::StartConvertToMp4Task() {
 
     const HWND target = hwnd_;
     SpawnBackgroundTask([this, target, inputPath, outputPath, args = args.str()]() {
+        std::vector<std::wstring> pendingLines;
+        pendingLines.reserve(kLogBatchSize);
         std::wstring lastErrorLine;
         const int exitCode = RunProcessCapture(
             config_.ffmpegPath,
             args,
-            [target, &lastErrorLine](const std::wstring& line) {
+            [target, &pendingLines, &lastErrorLine](const std::wstring& line) {
                 std::wstring trimmed = line;
                 while (!trimmed.empty() && (trimmed.back() == L'\r' || trimmed.back() == L'\n' || trimmed.back() == L' ')) {
                     trimmed.pop_back();
@@ -1753,8 +1837,9 @@ void MainWindow::StartConvertToMp4Task() {
                 if (!trimmed.empty()) {
                     lastErrorLine = trimmed;
                 }
-                PostOwnedMessage(target, WM_APP_RUN_LOG, 0, std::make_unique<RunLogMessage>(RunLogMessage{line}));
+                QueueLogLine(target, pendingLines, line);
             });
+        FlushPendingLogLines(target, pendingLines);
         auto status = std::make_unique<FadeItemStatusMessage>();
         status->index = 0;
         status->success = exitCode == 0;
@@ -2562,7 +2647,21 @@ bool MainWindow::BuildConcatListFile(const std::vector<std::wstring>& inputPaths
 
     std::error_code errorCode;
 
-    const std::filesystem::path tempPath = folder / L"list.txt";
+    std::filesystem::path tempPath;
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        std::wstringstream nameBuilder;
+        nameBuilder << L"vac_concat_" << ::GetCurrentProcessId() << L"_"
+                    << ::GetTickCount64() << L"_" << attempt << L".txt";
+        tempPath = folder / nameBuilder.str();
+        if (!std::filesystem::exists(tempPath, errorCode)) {
+            break;
+        }
+        tempPath.clear();
+    }
+    if (tempPath.empty()) {
+        return false;
+    }
+
     std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
     if (!output.is_open()) {
         return false;
@@ -3134,6 +3233,16 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         AppendLog(runLog->text);
         return 0;
     }
+    case WM_APP_RUN_LOG_BATCH: {
+        std::unique_ptr<RunLogBatchMessage> runLogBatch(reinterpret_cast<RunLogBatchMessage*>(lParam));
+        if (runLogBatch == nullptr) {
+            return 0;
+        }
+        for (const auto& line : runLogBatch->lines) {
+            AppendLog(line);
+        }
+        return 0;
+    }
     case WM_APP_FADE_ITEM_STATUS: {
         std::unique_ptr<FadeItemStatusMessage> status(reinterpret_cast<FadeItemStatusMessage*>(lParam));
         if (status == nullptr) {
@@ -3165,6 +3274,46 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             ::MessageBoxW(hwnd_, status->errorText.c_str(),
                           activeTaskModule_ == 3 ? L"格式转换失败" : L"淡入淡出失败",
                           MB_OK | MB_ICONERROR);
+        }
+        return 0;
+    }
+    case WM_APP_MEDIA_PROBE_ITEM: {
+        std::unique_ptr<MediaProbeItemMessage> probe(reinterpret_cast<MediaProbeItemMessage*>(lParam));
+        if (probe == nullptr || probe->requestId != mediaProbeRequestId_) {
+            return 0;
+        }
+        if (probe->singleItem) {
+            convertItem_ = std::move(probe->item);
+            RefreshConvertInfo();
+            UpdatePrimaryActionState();
+            return 0;
+        }
+        std::vector<ConcatListItem>* items = nullptr;
+        if (probe->module == 1) {
+            items = &concatItems_;
+        } else if (probe->module == 2) {
+            items = &fadeItems_;
+        } else if (probe->module == 3) {
+            items = &convertItems_;
+        }
+        if (items != nullptr && probe->index >= 0 && probe->index < static_cast<int>(items->size())) {
+            (*items)[probe->index] = std::move(probe->item);
+            if ((probe->module == 1 && selectedModule_ == 1) || (probe->module == 2 && selectedModule_ == 2)) {
+                RefreshConcatList();
+            }
+        }
+        return 0;
+    }
+    case WM_APP_MEDIA_PROBE_FINISHED: {
+        std::unique_ptr<MediaProbeFinishedMessage> probe(reinterpret_cast<MediaProbeFinishedMessage*>(lParam));
+        if (probe == nullptr || probe->requestId != mediaProbeRequestId_) {
+            return 0;
+        }
+        if (probe->module == 3) {
+            RefreshConvertInfo();
+            UpdatePrimaryActionState();
+        } else if ((probe->module == 1 && selectedModule_ == 1) || (probe->module == 2 && selectedModule_ == 2)) {
+            RefreshConcatList();
         }
         return 0;
     }

@@ -107,6 +107,19 @@ private:
         bool hasError = false;
     };
 
+    struct MediaProbeItemMessage {
+        int requestId = 0;
+        int module = 0;
+        int index = -1;
+        bool singleItem = false;
+        ConcatListItem item;
+    };
+
+    struct MediaProbeFinishedMessage {
+        int requestId = 0;
+        int module = 0;
+    };
+
     bool RegisterWindowClass(HINSTANCE instance);
     bool RegisterRangeSliderClass(HINSTANCE instance) const;
     void CreateControls();
@@ -120,6 +133,7 @@ private:
     void OpenConcatFilesDialog();
     void OpenFadeFilesDialog();
     void OpenConvertFilesDialog();
+    void StartMediaProbe(int module, const std::vector<std::wstring>& inputPaths, bool singleItem);
     bool PromptOutputFolder(std::wstring& folderPath);
     void OpenOutputFolder();
     void OpenSettingsDialog();
@@ -226,6 +240,7 @@ private:
     bool taskRunning_;
     bool convertCanToMp3_;
     bool convertCanToMp4_;
+    int mediaProbeRequestId_;
     std::atomic<bool> shuttingDown_;
     std::vector<std::thread> backgroundThreads_;
 };
