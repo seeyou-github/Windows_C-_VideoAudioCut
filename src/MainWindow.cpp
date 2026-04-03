@@ -133,6 +133,26 @@ void CenterWindowToScreen(HWND hwnd, int width, int height) {
     ::MoveWindow(hwnd, x, y, width, height, FALSE);
 }
 
+void ShowWindowWithoutWhiteFlash(HWND hwnd, int showCommand) {
+    if (hwnd == nullptr || !::IsWindow(hwnd)) {
+        return;
+    }
+
+    const LONG_PTR originalExStyle = ::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    ::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, originalExStyle | WS_EX_LAYERED);
+    ::SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+
+    ::ShowWindow(hwnd, showCommand);
+    ::UpdateWindow(hwnd);
+    ::RedrawWindow(hwnd, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME);
+
+    ::SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    ::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, originalExStyle);
+    ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
 }  // namespace
 
 MainWindow::MainWindow()
@@ -257,8 +277,7 @@ bool MainWindow::Create(HINSTANCE instance, int showCommand) {
 
     CenterWindowToScreen(hwnd_, config_.windowWidth, config_.windowHeight);
     SetDarkTitleBar();
-    ::ShowWindow(hwnd_, showCommand);
-    ::UpdateWindow(hwnd_);
+    ShowWindowWithoutWhiteFlash(hwnd_, showCommand);
     return true;
 }
 
@@ -1571,7 +1590,7 @@ void MainWindow::OpenSettingsDialog() {
     ::DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
 
     ::EnableWindow(hwnd_, FALSE);
-    ::ShowWindow(dialog, SW_SHOW);
+    ShowWindowWithoutWhiteFlash(dialog, SW_SHOW);
 
     MSG message{};
     while (::IsWindow(dialog) && ::GetMessageW(&message, nullptr, 0, 0)) {
